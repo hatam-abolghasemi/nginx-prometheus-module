@@ -111,6 +111,7 @@ has "nothing dropped"                 'nginx_metric_errors_total 0'
 
 # a refresh relabels an IP that changed hands
 kill "$DNS_PID"
+wait "$DNS_PID" 2>/dev/null || true
 echo '127.0.0.11 127-0-0-11.orders.shop.svc.cluster.local' > "$PREFIX/ptr"
 "$PREFIX/fake_dns" 15353 "$PREFIX/ptr" &
 DNS_PID=$!

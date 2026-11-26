@@ -63,7 +63,7 @@ jobs:
     name: nginx ${{ matrix.version }}${{ matrix.sanitize && ' (asan)' || '' }}
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get install -y --no-install-recommends libpcre2-dev zlib1g-dev libssl-dev
+      - run: sudo apt-get install -y --no-install-recommends libpcre2-dev zlib1g-dev libssl-dev netcat-openbsd
       - name: promtool
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -98,5 +98,7 @@ jobs:
         run: |
           sh tests/module_test.sh "$RUNNER_TEMP/out/sbin/nginx" \
             "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
-          sh tests/source_test.sh "$RUNNER_TEMP/out/sbin/nginx" \
-            "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
+          for t in source plug outbound; do
+            sh "tests/${t}_test.sh" "$RUNNER_TEMP/out/sbin/nginx" \
+              "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
+          done

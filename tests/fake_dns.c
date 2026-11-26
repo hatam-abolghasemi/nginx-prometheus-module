@@ -109,6 +109,8 @@ main(int argc, char **argv)
     load(argv[2]);
 
     fd = socket(AF_INET, SOCK_DGRAM, 0);
+    i = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &i, sizeof(i));
     memset(&sin, 0, sizeof(sin));
     sin.sin_family = AF_INET;
     sin.sin_port = htons((unsigned short) atoi(argv[1]));
