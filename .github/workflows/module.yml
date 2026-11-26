@@ -1,0 +1,97 @@
+name: Module tests
+
+# ngx_http_prometheus_module: the label code on its own, then the module in a
+# real nginx (newest mainline and stable), both under AddressSanitizer and
+# UBSan, and once more in a regular build. tests/module_test.sh checks the
+# exposition with promtool.
+on:
+  push:
+    paths:
+      - module/**
+      - tests/label_test.c
+      - tests/module_test.sh
+      - .github/workflows/module.yml
+  pull_request:
+    paths:
+      - module/**
+      - tests/label_test.c
+      - tests/module_test.sh
+      - .github/workflows/module.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    outputs:
+      list: ${{ steps.v.outputs.list }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          all=$(git ls-remote --tags --refs https://github.com/nginx/nginx.git \
+            | awk -F/ '{print $3}' \
+            | sed -n 's/^release-\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' | sort -V)
+          mainline=$(printf '%s\n' "$all" | tail -n1)
+          stable=$(printf '%s\n' "$all" | awk -F. '$2 % 2 == 0' | tail -n1)
+          echo "list=$(jq -nc --arg m "$mainline" --arg s "$stable" '[$m, $s] | unique')" >> "$GITHUB_OUTPUT"
+
+  label:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          cc -Wall -Wextra -Werror -fsanitize=address,undefined -Imodule \
+             -o label_test tests/label_test.c module/ngx_http_prometheus_label.c
+          ./label_test
+
+  nginx:
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ${{ fromJSON(needs.versions.outputs.list) }}
+        sanitize: [true, false]
+    name: nginx ${{ matrix.version }}${{ matrix.sanitize && ' (asan)' || '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - run: sudo apt-get install -y --no-install-recommends libpcre2-dev zlib1g-dev libssl-dev
+      - name: promtool
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/bin/sh\nexec docker run --rm -i --entrypoint promtool prom/prometheus "$@"\n' > "$RUNNER_TEMP/bin/promtool"
+          chmod +x "$RUNNER_TEMP/bin/promtool"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Build nginx and the module
+        env:
+          VERSION: ${{ matrix.version }}
+          SANITIZE: ${{ matrix.sanitize }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/nginx"
+          curl -fsSL "https://github.com/nginx/nginx/archive/refs/tags/release-$VERSION.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP/nginx" --strip-components=1
+          cd "$RUNNER_TEMP/nginx"
+          opts=()
+          if [ "$SANITIZE" = true ]; then
+            opts=(--with-cc-opt='-fsanitize=address,undefined -fno-omit-frame-pointer -O1'
+                  --with-ld-opt='-fsanitize=address,undefined')
+          fi
+          ./auto/configure --prefix="$RUNNER_TEMP/out" --with-compat \
+            --with-http_stub_status_module --with-http_ssl_module --with-http_v2_module \
+            --add-dynamic-module="$GITHUB_WORKSPACE/module" "${opts[@]}"
+          make -j"$(nproc)"
+          make install
+      - name: Test
+        env:
+          # an nginx dynamic module trips the ODR check by design (ngx_module_names)
+          ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          sh tests/module_test.sh "$RUNNER_TEMP/out/sbin/nginx" \
+            "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
