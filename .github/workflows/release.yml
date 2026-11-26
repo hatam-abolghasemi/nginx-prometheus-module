@@ -1,48 +1,92 @@
 name: Release
 
-# Project releases are decoupled from image tags. Image tags mirror the
-# upstream images' own (nginx:<tag>, openresty/openresty:<tag>); a GitHub
-# Release marks a milestone of THIS project's capabilities. Once the release
-# exists, nginx-image.yml is dispatched to attach the prebuilt .so files.
+# Push an annotated tag vX.Y.Z; its message is the title after the dash:
+#   git tag -a v2.3.0 -m "stream metrics" && git push origin v2.3.0
+# makes the release "v2.3.0 — stream metrics". The notes are the tag's
+# "## vX.Y.Z" section of CHANGELOG.md, one line per paragraph and list item
+# (.github/scripts/release-notes.sh), then the module and image notes; the
+# run fails if the section is missing. Re-run for an existing tag (Actions ->
+# Release -> Run workflow) to rewrite its title and notes.
 #
-# Cut one: move CHANGELOG.md's "Unreleased" entries under a new "## vX.Y.Z — date"
-# heading, commit, then  git tag vX.Y.Z && git push origin vX.Y.Z
-# The release notes are that section (.github/scripts/release-notes.sh); the
-# run fails if the section is missing. Re-run it (or re-push the tag) to
-# refresh the notes of an existing release.
+# Project releases are decoupled from image tags: images keep the upstream
+# images' own tags. Once a release exists, nginx-image.yml is dispatched to
+# attach the prebuilt .so files.
 on:
   push:
-    tags: ["v*"]
+    tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag whose release notes to (re)write, e.g. v1.1.0
+        description: "Existing tag, e.g. v2.2.0"
         required: true
+      title:
+        description: "Title after the dash (default: the tag's message)"
+        required: false
 
 permissions:
   contents: write
   actions: write
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ inputs.tag || github.ref_name }}
+      TITLE: ${{ inputs.title }}
     steps:
       - uses: actions/checkout@v5
-      - name: Create or update the GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ inputs.tag || github.ref_name }}
+        with:
+          fetch-depth: 0
+
+      - name: Title and notes
         run: |
           set -eu
-          # notes = the tag's section of CHANGELOG.md; fails if there is none
-          sh .github/scripts/release-notes.sh "$TAG" > "$RUNNER_TEMP/notes.md"
-          if gh release view "$TAG" > /dev/null 2>&1; then
-            gh release edit "$TAG" --title "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
-          else
-            gh release create "$TAG" --title "$TAG" --verify-tag --notes-file "$RUNNER_TEMP/notes.md"
+          git fetch --force --tags origin
+          git rev-parse -q --verify "refs/tags/$TAG" > /dev/null \
+            || { echo "::error::no tag $TAG"; exit 1; }
+
+          # the title after the dash: the input, else the tag's message
+          # without a "vX.Y.Z — " it may already start with
+          if [ -z "$TITLE" ]; then
+            TITLE=$(git tag -l --format='%(contents:subject)' "$TAG")
+            TITLE=${TITLE#"$TAG"}
+            TITLE=$(printf '%s' "$TITLE" | sed 's/^[[:space:]]*\(—\|–\|-\|:\)[[:space:]]*//')
+            [ "$TITLE" = "${TAG#v}" ] && TITLE=""
           fi
+          if [ -n "$TITLE" ]; then
+            echo "NAME=$TAG — $TITLE" >> "$GITHUB_ENV"
+          else
+            echo "NAME=$TAG" >> "$GITHUB_ENV"
+          fi
+
+          # notes from the tag's own CHANGELOG.md, so a re-run reproduces them
+          git show "$TAG:CHANGELOG.md" > "$RUNNER_TEMP/CHANGELOG.md"
+          sh .github/scripts/release-notes.sh "$TAG" "$RUNNER_TEMP/CHANGELOG.md" \
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
+
+          # only the newest version is marked latest
+          newest=$(git tag -l 'v*.*.*' --sort=-v:refname | head -n1)
+          if [ "$TAG" = "$newest" ]; then
+            echo "LATEST=--latest" >> "$GITHUB_ENV"
+          else
+            echo "LATEST=--latest=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Create or update the release
+        run: |
+          set -eu
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release edit "$TAG" --title "$NAME" --notes-file "$RUNNER_TEMP/notes.md" "$LATEST"
+          else
+            gh release create "$TAG" --title "$NAME" --notes-file "$RUNNER_TEMP/notes.md" "$LATEST" --verify-tag
+          fi
+          echo "### $NAME" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Attach the prebuilt modules
         if: github.event_name == 'push'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh workflow run nginx-image.yml -R "$GITHUB_REPOSITORY" -f images=false -f assets=true
