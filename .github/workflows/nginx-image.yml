@@ -239,13 +239,35 @@ jobs:
           echo "$metrics" | docker run --rm -i --entrypoint promtool prom/prometheus check metrics || rc=$?
           [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || { echo "::error::promtool: exit $rc"; exit 1; }
 
+      - name: Smoke test sidecar
+        if: steps.smoke-build.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke-app busybox \
+            sh -c 'mkdir -p /www/orders && echo app-ok > /www/orders/42 && httpd -f -p 8080 -h /www'
+          docker run -d --name smoke-sidecar --network container:smoke-app -e APP_PORT=8080 nginx-prometheus:smoke
+          probe() { docker run --rm --network container:smoke-app curlimages/curl -sS --retry 10 --retry-connrefused --retry-delay 1 -m 15 "$@"; }
+
+          [ "$(probe http://127.0.0.1/orders/42)" = "app-ok" ]
+          docker logs smoke-sidecar 2>&1 | grep -q 'sidecar for 127.0.0.1:8080'
+          metrics=$(probe http://127.0.0.1:9145/metrics)
+          echo "$metrics" | grep -q 'route="/orders/$param",status="200"'
+          echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
+
       - name: Smoke test logs
         if: always() && steps.smoke-build.outputs.run == 'true'
         run: |
-          docker logs smoke 2>&1 | tail -n 100
-          if docker logs smoke 2>&1 | grep -E '\[(emerg|alert|crit)\]'; then
-            echo "::error::nginx logged fatal errors"; exit 1
-          fi
+          fatal=0
+          for c in smoke smoke-sidecar; do
+            docker logs "$c" > /dev/null 2>&1 || continue
+            echo "::group::$c"
+            docker logs "$c" 2>&1 | tail -n 100
+            echo "::endgroup::"
+            if docker logs "$c" 2>&1 | grep -E '\[(emerg|alert|crit)\]'; then
+              echo "::error::$c logged fatal errors"; fatal=1
+            fi
+          done
+          exit "$fatal"
 
       - name: Build and push
         run: |

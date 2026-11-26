@@ -3,8 +3,9 @@
 #
 # The module is built against the exact nginx version inside that image, with
 # --with-compat, then copied into a clean copy of the same image. Nothing else
-# in the image changes except two config files: load_module at the top of
-# nginx.conf, and conf.d/prometheus.conf (zone + :9145/metrics).
+# in the image changes except two config files, load_module at the top of
+# nginx.conf and conf.d/prometheus.conf (zone + :9145/metrics), and one
+# entrypoint script that does nothing unless APP_PORT is set (the sidecar).
 #
 #   docker build -f module/docker/Dockerfile --build-arg NGINX_TAG=1.31.10-alpine .
 #
@@ -51,6 +52,8 @@ FROM ${BASE_IMAGE}:${NGINX_TAG}
 
 COPY --from=build /out/ngx_http_prometheus_module.so /usr/lib/nginx/modules/
 COPY module/docker/prometheus.conf /etc/nginx/conf.d/prometheus.conf
+# with APP_PORT set, makes the image a sidecar in front of the app
+COPY --chmod=755 module/docker/40-prometheus-sidecar.sh /docker-entrypoint.d/
 
 # load_module must sit in nginx.conf's main context; the stock nginx.conf has
 # no include there, so the line is put at its top.

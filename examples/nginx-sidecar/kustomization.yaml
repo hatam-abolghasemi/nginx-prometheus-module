@@ -1,0 +1,9 @@
+# App + the nginx sidecar with ngx_http_prometheus_module. Placeholder names
+# throughout; replace them, then:
+#
+#   sudo kubectl apply -k examples/nginx-sidecar/
+namespace: example-namespace
+
+resources:
+  - deployment.yaml
+  - service.yaml

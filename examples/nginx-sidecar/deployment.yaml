@@ -1,0 +1,54 @@
+# An app plus the nginx image (with ngx_http_prometheus_module) as its
+# sidecar. Everything named "example" is a placeholder.
+#
+# On here:
+#   sidecar          clients reach the pod on :80, nginx forwards to the app
+#   caller identity  callers in POD_CIDR are named by reverse DNS
+#   own identity     the pod finds its own Service name (on with APP_PORT)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-app
+  labels:
+    app.kubernetes.io/name: example-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: example-app
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: example-app
+    spec:
+      containers:
+      - name: app
+        image: registry.example.com/example/app:v1.0.0
+        ports:
+        - name: app
+          containerPort: 8080
+
+      - name: nginx
+        # pin a tag from docs/images.md, e.g. <nginx-version>-alpine
+        image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:stable-alpine
+        env:
+        - { name: APP_PORT, value: "8080" }
+        - { name: POD_CIDR, value: "10.233.0.0/16" }     # your cluster's pod range
+        ports:
+        - { name: http,    containerPort: 80 }
+        - { name: metrics, containerPort: 9145 }
+        readinessProbe:
+          httpGet: { path: /healthz, port: metrics }
+          periodSeconds: 5
+        livenessProbe:
+          httpGet: { path: /healthz, port: metrics }
+          periodSeconds: 15
+        resources:
+          requests: { cpu: 10m, memory: 16Mi }
+          limits:   { cpu: 500m, memory: 64Mi }
+        # extra directives: a ConfigMap of .conf files into conf.d, e.g.
+        # volumeMounts:
+        # - name: prometheus-extra
+        #   mountPath: /etc/nginx/conf.d/prometheus-extra.conf
+        #   subPath: prometheus-extra.conf
+        #   readOnly: true
