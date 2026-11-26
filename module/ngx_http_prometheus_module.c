@@ -20,76 +20,7 @@
  * gauge is the cheap way to keep latency and sizes. Histograms are opt-in.
  */
 
-#include <ngx_config.h>
-#include <ngx_core.h>
-#include <ngx_http.h>
-
-#include "ngx_http_prometheus_label.h"
-
-
-#define NGX_PROM_MAX_BUCKETS     32
-#define NGX_PROM_LABELS_MAX      2048
-#define NGX_PROM_ROUTE_MAX       1024
-#define NGX_PROM_ZONE_NAME       "prometheus"
-
-
-/* request labels, in label order */
-enum {
-    NGX_PROM_L_METHOD = 0,
-    NGX_PROM_L_ROUTE,
-    NGX_PROM_L_STATUS,
-    NGX_PROM_L_HOST,
-    NGX_PROM_L_MODE,
-    NGX_PROM_L_PROTOCOL,
-    NGX_PROM_L_COUNT
-};
-
-
-/* metrics; gauges and histograms per label set, then connection-level ones */
-enum {
-    NGX_PROM_M_REQUESTS = 0,
-    NGX_PROM_M_DURATION,
-    NGX_PROM_M_DURATION_HIST,
-    NGX_PROM_M_REQ_SIZE,
-    NGX_PROM_M_REQ_SIZE_HIST,
-    NGX_PROM_M_RESP_SIZE,
-    NGX_PROM_M_RESP_SIZE_HIST,
-    NGX_PROM_M_UP_RESPONSE,
-    NGX_PROM_M_UP_RESPONSE_HIST,
-    NGX_PROM_M_UP_CONNECT,
-    NGX_PROM_M_UP_HEADER,
-    NGX_PROM_M_CONNECTIONS,
-    NGX_PROM_M_CONN_REQUESTS,
-    NGX_PROM_M_CONN_REQUESTS_HIST,
-    NGX_PROM_M_CONN_TIME,
-    NGX_PROM_M_CONN_TIME_HIST,
-    NGX_PROM_M_SLOTS_LIMIT,
-    NGX_PROM_M_COUNT
-};
-
-
-/* histograms, each with its own buckets */
-enum {
-    NGX_PROM_H_DURATION = 0,
-    NGX_PROM_H_REQ_SIZE,
-    NGX_PROM_H_RESP_SIZE,
-    NGX_PROM_H_UP_RESPONSE,
-    NGX_PROM_H_CONN_REQUESTS,
-    NGX_PROM_H_CONN_TIME,
-    NGX_PROM_H_COUNT
-};
-
-
-/* per label set gauges */
-enum {
-    NGX_PROM_G_DURATION = 0,
-    NGX_PROM_G_REQ_SIZE,
-    NGX_PROM_G_RESP_SIZE,
-    NGX_PROM_G_UP_RESPONSE,
-    NGX_PROM_G_UP_CONNECT,
-    NGX_PROM_G_UP_HEADER,
-    NGX_PROM_G_COUNT
-};
+#include "ngx_http_prometheus.h"
 
 
 typedef struct {
@@ -159,7 +90,14 @@ static ngx_prom_metric_def_t  ngx_prom_metrics[NGX_PROM_M_COUNT] = {
 
 
 static const char  *ngx_prom_label_names[NGX_PROM_L_COUNT] = {
-    "method", "route", "status", "host", "mode", "protocol"
+    "method", "route", "status", "client_subnet", "host", "app", "namespace",
+    "mode", "source_service", "source_namespace", "protocol"
+};
+
+
+/* the sidecar's defaults: identity labels are opt-in */
+static ngx_flag_t  ngx_prom_label_on[NGX_PROM_L_COUNT] = {
+    1, 1, 1, 0, 1, 0, 0, 1, 0, 0, 1
 };
 
 
@@ -211,11 +149,7 @@ static struct {
 };
 
 
-typedef struct {
-    ngx_uint_t   n;
-    double       le[NGX_PROM_MAX_BUCKETS];
-    size_t       offset;          /* into a series' (or the header's) tail */
-} ngx_prom_hist_conf_t;
+#define ngx_prom_data(p)  ((u_char *) (p)->data)
 
 
 typedef struct {
@@ -230,58 +164,9 @@ typedef struct {
 } ngx_prom_series_t;
 
 
-typedef struct {
-    ngx_rbtree_t     rbtree;
-    ngx_rbtree_node_t sentinel;
-    ngx_queue_t      queue;
-    ngx_uint_t       nseries;
-    size_t           bytes;       /* sum of series record sizes */
-    uint32_t         layout;      /* fingerprint of the series layout */
-    uint64_t         errors;      /* nginx_metric_errors_total */
-    double           conn_requests;
-    double           conn_time;
-    ngx_msec_t       conn_touched;
-    /* connection-level histograms: uint64_t only for the alignment */
-    uint64_t         data[1];
-} ngx_prom_sh_t;
-
-
-typedef struct {
-    ngx_prom_sh_t   *sh;
-    ngx_slab_pool_t *shpool;
-    uint32_t         layout;      /* of the config this zone belongs to */
-} ngx_prom_zone_ctx_t;
-
-
-#define ngx_prom_data(p)  ((u_char *) (p)->data)
-
-
 /* histograms in a tail: n+1 per-bucket counts (the last is +Inf), then sum */
 #define NGX_PROM_HEADER_TAIL_MAX                                              \
     (2 * ((NGX_PROM_MAX_BUCKETS + 1) * sizeof(uint64_t) + sizeof(double)))
-
-
-typedef struct {
-    ngx_shm_zone_t        *zone;
-    ngx_flag_t             metric[NGX_PROM_M_COUNT];
-    ngx_flag_t             label[NGX_PROM_L_COUNT];
-    ngx_prom_hist_conf_t   hist[NGX_PROM_H_COUNT];
-    ngx_msec_t             gauge_expiry;
-    ngx_prom_route_conf_t  route;
-    ngx_uint_t             route_min_len;
-    ngx_uint_t             route_max_segment_len;
-    ngx_str_t              cluster_ip_prefix;
-    size_t                 series_tail;   /* histogram bytes per series */
-    size_t                 header_tail;   /* histogram bytes in the header */
-    uint32_t               layout;
-} ngx_http_prometheus_main_conf_t;
-
-
-typedef struct {
-    ngx_flag_t             record;
-    ngx_str_t              mode;
-    ngx_flag_t             handler;
-} ngx_http_prometheus_loc_conf_t;
 
 
 static ngx_int_t ngx_http_prometheus_init(ngx_conf_t *cf);
@@ -373,6 +258,104 @@ static ngx_command_t  ngx_http_prometheus_commands[] = {
       offsetof(ngx_http_prometheus_main_conf_t, cluster_ip_prefix),
       NULL },
 
+    { ngx_string("prometheus_source_ptr"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_1MORE,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_source_static"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE3,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_source_default"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_source_unresolved"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_source_probe"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_source_waypoint"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_source_ignore_service"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_1MORE,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_identity_fallback"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
+      ngx_prom_source_directive,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_source_refresh"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_msec_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_prometheus_main_conf_t, source.refresh),
+      NULL },
+
+    { ngx_string("prometheus_source_forget"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_msec_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_prometheus_main_conf_t, source.forget),
+      NULL },
+
+    { ngx_string("prometheus_dns"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_prometheus_main_conf_t, source.dns),
+      NULL },
+
+    { ngx_string("prometheus_dns_timeout"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_msec_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_prometheus_main_conf_t, source.dns_timeout),
+      NULL },
+
+    { ngx_string("prometheus_cluster_domain"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_prometheus_main_conf_t, source.cluster_domain),
+      NULL },
+
+    { ngx_string("prometheus_identity"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_FLAG,
+      ngx_conf_set_flag_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_prometheus_main_conf_t, source.identity),
+      NULL },
+
     { ngx_string("prometheus_record"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
@@ -420,10 +403,10 @@ ngx_module_t  ngx_http_prometheus_module = {
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
     NULL,                                  /* init module */
-    NULL,                                  /* init process */
+    ngx_prom_source_init_process,          /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
-    NULL,                                  /* exit process */
+    ngx_prom_source_exit_process,          /* exit process */
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
@@ -459,6 +442,8 @@ ngx_http_prometheus_create_main_conf(ngx_conf_t *cf)
     pmcf->route_min_len = NGX_CONF_UNSET_UINT;
     pmcf->route_max_segment_len = NGX_CONF_UNSET_UINT;
 
+    ngx_prom_source_create_conf(&pmcf->source);
+
     return pmcf;
 }
 
@@ -477,7 +462,7 @@ ngx_http_prometheus_init_main_conf(ngx_conf_t *cf, void *conf)
     }
 
     for (i = 0; i < NGX_PROM_L_COUNT; i++) {
-        ngx_conf_init_value(pmcf->label[i], 1);
+        ngx_conf_init_value(pmcf->label[i], ngx_prom_label_on[i]);
     }
 
     for (i = 0; i < NGX_PROM_H_COUNT; i++) {
@@ -492,6 +477,10 @@ ngx_http_prometheus_init_main_conf(ngx_conf_t *cf, void *conf)
     ngx_conf_init_msec_value(pmcf->gauge_expiry, 15000);
     ngx_conf_init_uint_value(pmcf->route_min_len, 4);
     ngx_conf_init_uint_value(pmcf->route_max_segment_len, 64);
+
+    if (ngx_prom_source_init_conf(cf, pmcf) != NGX_CONF_OK) {
+        return NGX_CONF_ERROR;
+    }
 
     pmcf->route.min_len = pmcf->route_min_len;
     pmcf->route.max_segment_len = pmcf->route_max_segment_len;
@@ -860,6 +849,16 @@ ngx_http_prometheus_init(ngx_conf_t *cf)
 
     *h = ngx_http_prometheus_log_handler;
 
+    /* PTR lookups start before the content, after realip */
+    if (pmcf->source.enabled && pmcf->source.ptr_ranges) {
+        h = ngx_array_push(&cmcf->phases[NGX_HTTP_PRECONTENT_PHASE].handlers);
+        if (h == NULL) {
+            return NGX_ERROR;
+        }
+
+        *h = ngx_prom_source_post_read;
+    }
+
     return NGX_OK;
 }
 
@@ -927,6 +926,7 @@ ngx_http_prometheus_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_str_rbtree_insert_value);
+    ngx_prom_source_init_zone(ctx->sh);
     ngx_queue_init(&ctx->sh->queue);
 
     len = sizeof(" in prometheus zone \"\"") + shm_zone->shm.name.len;
@@ -1037,6 +1037,64 @@ ngx_prom_is_grpc(ngx_http_request_t *r)
 }
 
 
+/* X-Forwarded-For's first address, else the peer, masked; or "unknown" */
+static size_t
+ngx_prom_client_subnet_label(ngx_http_request_t *r, u_char *out)
+{
+    u_char              *p, *s, *end;
+    uint32_t             ip;
+    ngx_uint_t           i;
+    ngx_list_part_t     *part;
+    ngx_table_elt_t     *h;
+    struct sockaddr_in  *sin;
+
+    part = &r->headers_in.headers.part;
+    h = part->elts;
+
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            h = part->elts;
+            i = 0;
+        }
+
+        if (h[i].key.len == 15
+            && ngx_strncasecmp(h[i].key.data, (u_char *) "X-Forwarded-For",
+                               15) == 0)
+        {
+            p = h[i].value.data;
+            end = p + h[i].value.len;
+
+            while (p < end && *p == ' ') {
+                p++;
+            }
+
+            s = p;
+
+            while (p < end && *p != ',' && *p != ' ') {
+                p++;
+            }
+
+            if (ngx_prom_parse_ipv4(s, p - s, &ip)) {
+                return ngx_prom_client_subnet(ip, out);
+            }
+
+            return ngx_cpymem(out, "unknown", 7) - out;
+        }
+    }
+
+    if (r->connection->sockaddr->sa_family == AF_INET) {
+        sin = (struct sockaddr_in *) r->connection->sockaddr;
+        return ngx_prom_client_subnet(ntohl(sin->sin_addr.s_addr), out);
+    }
+
+    return ngx_cpymem(out, "unknown", 7) - out;
+}
+
+
 #define ngx_prom_series_size(len, tail)                                       \
     (offsetof(ngx_prom_series_t, data) + ngx_align(len, sizeof(uint64_t))     \
      + (tail))
@@ -1064,7 +1122,8 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
     ngx_http_prometheus_main_conf_t  *pmcf;
     u_char                            labels[NGX_PROM_LABELS_MAX];
     u_char                            route[NGX_PROM_ROUTE_MAX];
-    u_char                            num[NGX_INT_T_LEN];
+    u_char                            num[NGX_INT_T_LEN + 16];
+    ngx_prom_name_t                   name, name2;
 
     if (r != r->main) {
         return NGX_OK;
@@ -1104,17 +1163,59 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
         len = ngx_prom_append_label(labels, len, "status", num, p - num);
     }
 
+    if (pmcf->label[NGX_PROM_L_CLIENT_SUBNET]) {
+        n = ngx_prom_client_subnet_label(r, num);
+        len = ngx_prom_append_label(labels, len, "client_subnet", num, n);
+    }
+
     if (pmcf->label[NGX_PROM_L_HOST]) {
         host = ngx_prom_request_host(r);
-        v = ngx_prom_host_classify(host->data, host->len,
-                                   pmcf->cluster_ip_prefix.data,
-                                   pmcf->cluster_ip_prefix.len, &n);
+
+        if (ngx_prom_source_own_host(pmcf, host, &name)) {
+            /* this pod's own IP: the name callers reach it by */
+            v = name.data;
+            n = name.len;
+
+        } else {
+            v = ngx_prom_host_classify(host->data, host->len,
+                                       pmcf->cluster_ip_prefix.data,
+                                       pmcf->cluster_ip_prefix.len, &n);
+        }
+
         len = ngx_prom_append_label(labels, len, "host", v, n);
+    }
+
+    if (pmcf->label[NGX_PROM_L_APP] || pmcf->label[NGX_PROM_L_NAMESPACE]) {
+        ngx_prom_source_self(pmcf, &name, &name2);
+
+        if (pmcf->label[NGX_PROM_L_APP]) {
+            len = ngx_prom_append_label(labels, len, "app", name.data,
+                                        name.len);
+        }
+
+        if (pmcf->label[NGX_PROM_L_NAMESPACE]) {
+            len = ngx_prom_append_label(labels, len, "namespace", name2.data,
+                                        name2.len);
+        }
     }
 
     if (pmcf->label[NGX_PROM_L_MODE]) {
         len = ngx_prom_append_label(labels, len, "mode",
                                     plcf->mode.data, plcf->mode.len);
+    }
+
+    if (pmcf->source.enabled) {
+        ngx_prom_source_caller(r, &plcf->mode, &name, &name2);
+
+        if (pmcf->label[NGX_PROM_L_SOURCE_SERVICE]) {
+            len = ngx_prom_append_label(labels, len, "source_service",
+                                        name.data, name.len);
+        }
+
+        if (pmcf->label[NGX_PROM_L_SOURCE_NAMESPACE]) {
+            len = ngx_prom_append_label(labels, len, "source_namespace",
+                                        name2.data, name2.len);
+        }
     }
 
     if (pmcf->label[NGX_PROM_L_PROTOCOL]) {

@@ -6,3 +6,4 @@ ca.crt
 # local build scratch
 *.log
 /label_test
+/identity_test

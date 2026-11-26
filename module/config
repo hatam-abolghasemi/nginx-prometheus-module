@@ -2,7 +2,7 @@ ngx_addon_name=ngx_http_prometheus_module
 
 ngx_module_type=HTTP
 ngx_module_name=ngx_http_prometheus_module
-ngx_module_srcs="$ngx_addon_dir/ngx_http_prometheus_module.c $ngx_addon_dir/ngx_http_prometheus_label.c"
-ngx_module_deps="$ngx_addon_dir/ngx_http_prometheus_label.h"
+ngx_module_srcs="$ngx_addon_dir/ngx_http_prometheus_module.c $ngx_addon_dir/ngx_http_prometheus_source.c $ngx_addon_dir/ngx_http_prometheus_label.c $ngx_addon_dir/ngx_http_prometheus_identity.c"
+ngx_module_deps="$ngx_addon_dir/ngx_http_prometheus.h $ngx_addon_dir/ngx_http_prometheus_label.h $ngx_addon_dir/ngx_http_prometheus_identity.h"
 
 . auto/module
