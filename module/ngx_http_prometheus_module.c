@@ -4,10 +4,11 @@
  * location. No Lua, no exporter process, no access log to parse.
  *
  *   load_module modules/ngx_http_prometheus_module.so;
- *   http {
- *       prometheus_zone 4m;
- *       server { listen 9145; location = /metrics { prometheus; } }
- *   }
+ *
+ * is all it takes: with no prometheus_zone a 4m zone is made, and with no
+ * `prometheus;` location anywhere the module listens on :9145 itself
+ * (prometheus_listen) and serves /metrics and /healthz there, whatever the
+ * rest of nginx.conf says.
  *
  * Every request is recorded in the log phase: one lookup of its label set in
  * the zone and a few additions, under the zone's mutex (the same pattern as
@@ -187,6 +188,8 @@ static char *ngx_http_prometheus_route_rule(ngx_conf_t *cf,
     ngx_command_t *cmd, void *conf);
 static char *ngx_http_prometheus(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static ngx_int_t ngx_http_prometheus_add_zone(ngx_conf_t *cf,
+    ngx_http_prometheus_main_conf_t *pmcf, ssize_t size);
 static ngx_int_t ngx_http_prometheus_init_zone(ngx_shm_zone_t *shm_zone,
     void *data);
 static ngx_int_t ngx_http_prometheus_log_handler(ngx_http_request_t *r);
@@ -356,6 +359,13 @@ static ngx_command_t  ngx_http_prometheus_commands[] = {
       offsetof(ngx_http_prometheus_main_conf_t, source.identity),
       NULL },
 
+    { ngx_string("prometheus_listen"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_conf_set_str_slot,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      offsetof(ngx_http_prometheus_main_conf_t, listen),
+      NULL },
+
     { ngx_string("prometheus_record"),
       NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_FLAG,
       ngx_conf_set_flag_slot,
@@ -456,6 +466,19 @@ ngx_http_prometheus_init_main_conf(ngx_conf_t *cf, void *conf)
     size_t      size;
     uint32_t    crc;
     ngx_uint_t  i, j;
+
+    /* loaded is enough: with no prometheus_zone, a 4m zone */
+    if (pmcf->zone == NULL && !pmcf->zone_off) {
+        if (ngx_http_prometheus_add_zone(cf, pmcf, 4 * 1024 * 1024)
+            != NGX_OK)
+        {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    if (pmcf->listen.data == NULL) {
+        ngx_str_set(&pmcf->listen, "9145");
+    }
 
     for (i = 0; i < NGX_PROM_M_COUNT; i++) {
         ngx_conf_init_value(pmcf->metric[i], ngx_prom_metrics[i].on);
@@ -578,20 +601,51 @@ ngx_http_prometheus_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 }
 
 
+static ngx_int_t
+ngx_http_prometheus_add_zone(ngx_conf_t *cf,
+    ngx_http_prometheus_main_conf_t *pmcf, ssize_t size)
+{
+    ngx_str_t             name;
+    ngx_prom_zone_ctx_t  *ctx;
+
+    ctx = ngx_pcalloc(cf->pool, sizeof(ngx_prom_zone_ctx_t));
+    if (ctx == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_str_set(&name, NGX_PROM_ZONE_NAME);
+
+    pmcf->zone = ngx_shared_memory_add(cf, &name, size,
+                                       &ngx_http_prometheus_module);
+    if (pmcf->zone == NULL) {
+        return NGX_ERROR;
+    }
+
+    pmcf->zone->init = ngx_http_prometheus_init_zone;
+    pmcf->zone->data = ctx;
+
+    return NGX_OK;
+}
+
+
 static char *
 ngx_http_prometheus_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_prometheus_main_conf_t *pmcf = conf;
 
-    ssize_t               size;
-    ngx_str_t            *value, name;
-    ngx_prom_zone_ctx_t  *ctx;
+    ssize_t     size;
+    ngx_str_t  *value;
 
-    if (pmcf->zone) {
+    if (pmcf->zone || pmcf->zone_off) {
         return "is duplicate";
     }
 
     value = cf->args->elts;
+
+    if (value[1].len == 3 && ngx_strncmp(value[1].data, "off", 3) == 0) {
+        pmcf->zone_off = 1;
+        return NGX_CONF_OK;
+    }
 
     size = ngx_parse_size(&value[1]);
 
@@ -607,21 +661,9 @@ ngx_http_prometheus_zone(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
         return NGX_CONF_ERROR;
     }
 
-    ctx = ngx_pcalloc(cf->pool, sizeof(ngx_prom_zone_ctx_t));
-    if (ctx == NULL) {
+    if (ngx_http_prometheus_add_zone(cf, pmcf, size) != NGX_OK) {
         return NGX_CONF_ERROR;
     }
-
-    ngx_str_set(&name, NGX_PROM_ZONE_NAME);
-
-    pmcf->zone = ngx_shared_memory_add(cf, &name, size,
-                                       &ngx_http_prometheus_module);
-    if (pmcf->zone == NULL) {
-        return NGX_CONF_ERROR;
-    }
-
-    pmcf->zone->init = ngx_http_prometheus_init_zone;
-    pmcf->zone->data = ctx;
 
     return NGX_CONF_OK;
 }
@@ -811,13 +853,17 @@ ngx_http_prometheus(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_prometheus_loc_conf_t *plcf = conf;
 
-    ngx_http_core_loc_conf_t  *clcf;
+    ngx_http_core_loc_conf_t         *clcf;
+    ngx_http_prometheus_main_conf_t  *pmcf;
 
     if (plcf->handler != NGX_CONF_UNSET) {
         return "is duplicate";
     }
 
     plcf->handler = 1;
+
+    pmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_prometheus_module);
+    pmcf->has_location = 1;
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_prometheus_handler;
@@ -848,6 +894,15 @@ ngx_http_prometheus_init(ngx_conf_t *cf)
     }
 
     *h = ngx_http_prometheus_log_handler;
+
+    /* no `prometheus;` anywhere: serve the metrics on prometheus_listen */
+    if (!pmcf->has_location
+        && !(pmcf->listen.len == 3
+             && ngx_strncmp(pmcf->listen.data, "off", 3) == 0)
+        && ngx_prom_listen_add(cf, pmcf) != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
 
     /* PTR lookups start before the content, after realip */
     if (pmcf->source.enabled && pmcf->source.ptr_ranges) {
@@ -1037,6 +1092,69 @@ ngx_prom_is_grpc(ngx_http_request_t *r)
 }
 
 
+static ngx_inline ngx_flag_t
+ngx_prom_is_connect(ngx_http_request_t *r)
+{
+    return r->method_name.len == 7
+           && ngx_strncmp(r->method_name.data, "CONNECT", 7) == 0;
+}
+
+
+/*
+ * A CONNECT's route is its target, "host:port", with the host classified
+ * like the host label (an IP is "$ip", a cluster IP "kubernetes"): the
+ * destinations a pod calls, not one series per address.
+ */
+static size_t
+ngx_prom_connect_route(ngx_http_request_t *r,
+    ngx_http_prometheus_main_conf_t *pmcf, u_char *out, size_t cap)
+{
+    u_char        *p, *end, *target, *colon;
+    size_t         n, hlen;
+    const u_char  *h;
+
+    p = r->request_line.data;
+    end = p + r->request_line.len;
+
+    while (p < end && *p != ' ') {
+        p++;
+    }
+
+    target = ++p;
+
+    while (p < end && *p != ' ') {
+        p++;
+    }
+
+    if (target >= end) {
+        return 0;
+    }
+
+    /* the port is after the last ':' (an IPv6 target is [addr]:port) */
+    for (colon = p; colon > target && colon[-1] != ':'; colon--) {
+        /* void */
+    }
+
+    if (colon == target) {
+        colon = p + 1;              /* no port */
+    }
+
+    h = ngx_prom_host_classify(target, colon - 1 - target,
+                               pmcf->cluster_ip_prefix.data,
+                               pmcf->cluster_ip_prefix.len, &hlen);
+
+    n = ngx_min(hlen, cap);
+    ngx_memcpy(out, h, n);
+
+    if (colon <= p && n + 1 + (p - colon) <= cap) {
+        out[n++] = ':';
+        n = ngx_cpymem(out + n, colon, p - colon) - out;
+    }
+
+    return n;
+}
+
+
 /* X-Forwarded-For's first address, else the peer, masked; or "unknown" */
 static size_t
 ngx_prom_client_subnet_label(ngx_http_request_t *r, u_char *out)
@@ -1152,8 +1270,15 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
     }
 
     if (pmcf->label[NGX_PROM_L_ROUTE]) {
-        n = ngx_prom_route_sanitize(r->unparsed_uri.data, r->unparsed_uri.len,
-                                    &pmcf->route, route, sizeof(route));
+        if (ngx_prom_is_connect(r)) {
+            n = ngx_prom_connect_route(r, pmcf, route, sizeof(route));
+
+        } else {
+            n = ngx_prom_route_sanitize(r->unparsed_uri.data,
+                                        r->unparsed_uri.len, &pmcf->route,
+                                        route, sizeof(route));
+        }
+
         len = ngx_prom_append_label(labels, len, "route", route, n);
     }
 
@@ -1223,9 +1348,7 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
 #if (NGX_HTTP_SSL)
         tls = (c->ssl != NULL);
 #endif
-        if (r->method_name.len == 7
-            && ngx_strncmp(r->method_name.data, "CONNECT", 7) == 0)
-        {
+        if (ngx_prom_is_connect(r)) {
             v = (u_char *) "tunnel";
 
         } else if (ngx_prom_is_grpc(r)) {
@@ -1365,7 +1488,7 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
 /* exposition */
 
 typedef struct {
-    ngx_http_request_t  *r;
+    ngx_pool_t          *pool;
     ngx_chain_t         *out;
     ngx_chain_t        **last;
     ngx_buf_t           *b;
@@ -1386,13 +1509,13 @@ ngx_prom_reserve(ngx_prom_writer_t *w, size_t need)
         return w->b->last;
     }
 
-    w->b = ngx_create_temp_buf(w->r->pool, ngx_max(NGX_PROM_CHUNK, need));
+    w->b = ngx_create_temp_buf(w->pool, ngx_max(NGX_PROM_CHUNK, need));
     if (w->b == NULL) {
         w->error = 1;
         return NULL;
     }
 
-    cl = ngx_alloc_chain_link(w->r->pool);
+    cl = ngx_alloc_chain_link(w->pool);
     if (cl == NULL) {
         w->error = 1;
         return NULL;
@@ -1537,12 +1660,17 @@ ngx_prom_histogram(ngx_prom_writer_t *w, const char *name, u_char *labels,
 }
 
 
-static ngx_int_t
-ngx_http_prometheus_handler(ngx_http_request_t *r)
+/*
+ * The exposition of everything in the zone, as a chain allocated from pool.
+ * Used by the `prometheus;` location and by the built-in :9145 listener.
+ */
+ngx_int_t
+ngx_prom_render(ngx_http_prometheus_main_conf_t *pmcf, ngx_pool_t *pool,
+    ngx_chain_t **out, off_t *length)
 {
     size_t                            bytes, size, off, len;
     u_char                           *snap, *tail, *header, *labels;
-    ngx_int_t                         rc, g;
+    ngx_int_t                         g;
     ngx_uint_t                        m;
     ngx_msec_t                        now, expiry;
     ngx_chain_t                      *cl;
@@ -1553,30 +1681,12 @@ ngx_http_prometheus_handler(ngx_http_request_t *r)
     ngx_prom_zone_ctx_t              *ctx;
     ngx_prom_metric_def_t            *md;
     ngx_core_conf_t                  *ccf;
-    ngx_http_prometheus_main_conf_t  *pmcf;
 
     static ngx_prom_metric_def_t  errors = {
         NULL, "nginx_metric_errors_total",
         "Requests not recorded because the prometheus zone was full",
         "counter", 1, -1, -1
     };
-
-    if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
-        return NGX_HTTP_NOT_ALLOWED;
-    }
-
-    rc = ngx_http_discard_request_body(r);
-    if (rc != NGX_OK) {
-        return rc;
-    }
-
-    pmcf = ngx_http_get_module_main_conf(r, ngx_http_prometheus_module);
-
-    if (pmcf->zone == NULL) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "\"prometheus\" needs \"prometheus_zone\" in http{}");
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
 
     ctx = pmcf->zone->data;
     now = ngx_current_msec;
@@ -1591,9 +1701,9 @@ ngx_http_prometheus_handler(ngx_http_request_t *r)
 
     /* both copies hold uint64_t and double: align them for 32-bit too */
 
-    header = ngx_palloc(r->pool, NGX_PROM_HEADER_TAIL_MAX + sizeof(uint64_t));
+    header = ngx_palloc(pool, NGX_PROM_HEADER_TAIL_MAX + sizeof(uint64_t));
     if (header == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        return NGX_ERROR;
     }
 
     header = ngx_align_ptr(header, sizeof(uint64_t));
@@ -1604,9 +1714,9 @@ ngx_http_prometheus_handler(ngx_http_request_t *r)
 
     bytes += bytes / 8 + 16 * ngx_prom_series_size(256, pmcf->series_tail);
 
-    snap = ngx_palloc(r->pool, bytes + sizeof(uint64_t));
+    snap = ngx_palloc(pool, bytes + sizeof(uint64_t));
     if (snap == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        return NGX_ERROR;
     }
 
     snap = ngx_align_ptr(snap, sizeof(uint64_t));
@@ -1642,7 +1752,7 @@ ngx_http_prometheus_handler(ngx_http_request_t *r)
     /* format */
 
     ngx_memzero(&w, sizeof(ngx_prom_writer_t));
-    w.r = r;
+    w.pool = pool;
     w.last = &w.out;
 
     for (m = 0; m < NGX_PROM_M_COUNT; m++) {
@@ -1750,20 +1860,58 @@ ngx_http_prometheus_handler(ngx_http_request_t *r)
                   (double) hcopy.errors);
 
     if (w.error) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        return NGX_ERROR;
     }
 
-    r->headers_out.content_length_n = 0;
+    *length = 0;
 
     for (cl = w.out; cl; cl = cl->next) {
-        r->headers_out.content_length_n += cl->buf->last - cl->buf->pos;
+        *length += cl->buf->last - cl->buf->pos;
 
         if (cl->next == NULL) {
-            cl->buf->last_buf = (r == r->main) ? 1 : 0;
             cl->buf->last_in_chain = 1;
         }
     }
 
+    *out = w.out;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_prometheus_handler(ngx_http_request_t *r)
+{
+    off_t                             length;
+    ngx_int_t                         rc;
+    ngx_chain_t                      *out, *cl;
+    ngx_http_prometheus_main_conf_t  *pmcf;
+
+    if (!(r->method & (NGX_HTTP_GET|NGX_HTTP_HEAD))) {
+        return NGX_HTTP_NOT_ALLOWED;
+    }
+
+    rc = ngx_http_discard_request_body(r);
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    pmcf = ngx_http_get_module_main_conf(r, ngx_http_prometheus_module);
+
+    if (pmcf->zone == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "\"prometheus\" with \"prometheus_zone off\"");
+        return NGX_HTTP_NOT_FOUND;
+    }
+
+    if (ngx_prom_render(pmcf, r->pool, &out, &length) != NGX_OK) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    for (cl = out; cl->next; cl = cl->next) { /* void */ }
+    cl->buf->last_buf = (r == r->main) ? 1 : 0;
+
+    r->headers_out.content_length_n = length;
     r->headers_out.status = NGX_HTTP_OK;
     ngx_str_set(&r->headers_out.content_type,
                 "text/plain; version=0.0.4; charset=utf-8");
@@ -1776,5 +1924,5 @@ ngx_http_prometheus_handler(ngx_http_request_t *r)
         return rc;
     }
 
-    return ngx_http_output_filter(r, w.out);
+    return ngx_http_output_filter(r, out);
 }

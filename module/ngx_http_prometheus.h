@@ -188,6 +188,9 @@ typedef struct ngx_http_prometheus_main_conf_s  ngx_http_prometheus_main_conf_t;
 
 struct ngx_http_prometheus_main_conf_s {
     ngx_shm_zone_t          *zone;
+    ngx_flag_t               zone_off;      /* prometheus_zone off */
+    ngx_flag_t               has_location;  /* a `prometheus;` exists */
+    ngx_str_t                listen;        /* prometheus_listen */
     ngx_flag_t               metric[NGX_PROM_M_COUNT];
     ngx_flag_t               label[NGX_PROM_L_COUNT];
     ngx_prom_hist_conf_t     hist[NGX_PROM_H_COUNT];
@@ -219,6 +222,18 @@ typedef struct {
 
 
 extern ngx_module_t  ngx_http_prometheus_module;
+
+
+/* ngx_http_prometheus_module.c */
+
+ngx_int_t ngx_prom_render(ngx_http_prometheus_main_conf_t *pmcf,
+    ngx_pool_t *pool, ngx_chain_t **out, off_t *length);
+
+
+/* ngx_http_prometheus_listen.c */
+
+ngx_int_t ngx_prom_listen_add(ngx_conf_t *cf,
+    ngx_http_prometheus_main_conf_t *pmcf);
 
 
 /* ngx_http_prometheus_source.c */
