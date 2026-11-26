@@ -8,14 +8,14 @@ on:
   push:
     paths:
       - module/**
-      - tests/label_test.c
-      - tests/module_test.sh
+      - tests/*.c
+      - tests/*.sh
       - .github/workflows/module.yml
   pull_request:
     paths:
       - module/**
-      - tests/label_test.c
-      - tests/module_test.sh
+      - tests/*.c
+      - tests/*.sh
       - .github/workflows/module.yml
   workflow_dispatch:
 
@@ -47,6 +47,9 @@ jobs:
           cc -Wall -Wextra -Werror -fsanitize=address,undefined -Imodule \
              -o label_test tests/label_test.c module/ngx_http_prometheus_label.c
           ./label_test
+          cc -Wall -Wextra -Werror -fsanitize=address,undefined -Imodule \
+             -o identity_test tests/identity_test.c module/ngx_http_prometheus_identity.c
+          ./identity_test
 
   nginx:
     needs: versions
@@ -94,4 +97,6 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           sh tests/module_test.sh "$RUNNER_TEMP/out/sbin/nginx" \
+            "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
+          sh tests/source_test.sh "$RUNNER_TEMP/out/sbin/nginx" \
             "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
