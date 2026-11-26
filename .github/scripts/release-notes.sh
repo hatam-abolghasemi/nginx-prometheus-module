@@ -33,11 +33,18 @@ cat <<'NOTE'
 
 ---
 
-Images are published continuously under docker-openresty's own tags, not
-these versions:
+**The module:** the `.so` files attached below are built from this tag for
+the newest mainline and stable nginx (glibc and musl, amd64 and arm64). Load
+one with `load_module`; it must match your nginx version exactly. Any other
+version: build it from source, see
+[docs/module.md](https://github.com/hatam-abolghasemi/nginx-prometheus-module/blob/main/docs/module.md#install).
 
-    ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter:<openresty-tag>-<flavor>
+**Images** are published continuously under the upstream images' own tags,
+not these versions:
 
-Current tags and digests: [docs/images.md](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/blob/main/docs/images.md).
+    ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:<nginx-tag>
+    ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:<openresty-tag>-<flavor>
+
+Tags: [docs/images.md](https://github.com/hatam-abolghasemi/nginx-prometheus-module/blob/main/docs/images.md).
 Pin by digest (`@sha256:...`) in production.
 NOTE

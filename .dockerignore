@@ -5,3 +5,5 @@
 !docker/**
 !vendor
 !vendor/**
+!module
+!module/**

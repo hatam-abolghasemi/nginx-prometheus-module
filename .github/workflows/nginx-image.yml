@@ -1,0 +1,352 @@
+name: nginx image
+
+# Mirrors the official nginx image: for the newest mainline and the newest
+# stable nginx, every flavor upstream publishes (debian, alpine, alpine-slim,
+# perl, otel, ...) is rebuilt with ngx_http_prometheus_module loaded, on the
+# same platforms, under the same tags -- only the image name differs.
+#
+#   nginx:<tag>
+#   ghcr.io/<owner>/nginx-prometheus-module/nginx:<tag>
+#
+# Flavors and platforms are read from Docker Hub for each version, so a flavor
+# upstream adds or drops shows up here without editing this file.
+#
+# The `assets` job attaches prebuilt .so files (glibc and musl, amd64 and
+# arm64) for the same nginx versions to the newest GitHub Release, built from
+# that release's tag. release.yml dispatches this workflow after a release so
+# its assets appear right away; the schedule adds them for nginx versions that
+# come out later. Failed runs are retried by retry.yml.
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  push:
+    branches: [main]
+    paths:
+      - module/**
+      - .github/workflows/nginx-image.yml
+  workflow_dispatch:
+    inputs:
+      nginx_version:
+        description: nginx version, e.g. 1.31.10 (empty = newest mainline and stable)
+        required: false
+        default: ""
+      flavors:
+        description: comma-separated flavors, "default" for the plain tag (empty = all)
+        required: false
+        default: ""
+      images:
+        description: build images
+        type: boolean
+        default: true
+      assets:
+        description: attach .so files to the newest release
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: nginx-image
+  cancel-in-progress: false
+
+env:
+  NGINX_REPO: https://github.com/nginx/nginx.git
+  BASE_IMAGE: nginx
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      versions: ${{ steps.versions.outputs.versions }}
+      matrix: ${{ steps.flavors.outputs.matrix }}
+    steps:
+      - id: versions
+        env:
+          REQUESTED: ${{ inputs.nginx_version }}
+        run: |
+          set -euo pipefail
+          all=$(git ls-remote --tags --refs "$NGINX_REPO" \
+            | awk -F/ '{print $3}' \
+            | sed -n 's/^release-\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' \
+            | sort -V)
+          mainline=$(printf '%s\n' "$all" | tail -n1)
+          # stable lines have an even minor version
+          stable=$(printf '%s\n' "$all" | awk -F. '$2 % 2 == 0' | tail -n1)
+
+          # one row per version: version, series, channel
+          rows=""
+          if [ -n "$REQUESTED" ]; then
+            printf '%s\n' "$all" | grep -qx "$REQUESTED" \
+              || { echo "::error::nginx $REQUESTED is not a release"; exit 1; }
+            series=$(printf '%s' "$REQUESTED" | cut -d. -f1,2)
+            newest_in_series=$(printf '%s\n' "$all" | grep "^$series\." | tail -n1)
+            channel=""
+            [ "$REQUESTED" = "$mainline" ] && channel=mainline
+            [ "$REQUESTED" = "$stable" ] && channel=stable
+            rows=$(jq -nc --arg v "$REQUESTED" --arg s "$series" --arg c "$channel" \
+              --argjson n "$([ "$REQUESTED" = "$newest_in_series" ] && echo true || echo false)" \
+              '[{version: $v, series: $s, channel: $c, newest_in_series: $n}]')
+          else
+            rows=$(jq -nc --arg m "$mainline" --arg s "$stable" '
+              [{version: $m, series: ($m | split(".")[0:2] | join(".")), channel: "mainline", newest_in_series: true},
+               {version: $s, series: ($s | split(".")[0:2] | join(".")), channel: "stable", newest_in_series: true}]')
+          fi
+          echo "versions=$rows" >> "$GITHUB_OUTPUT"
+          echo "mainline $mainline, stable $stable"
+          echo "$rows" | jq .
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: flavors
+        env:
+          VERSIONS: ${{ steps.versions.outputs.versions }}
+          REQUESTED_FLAVORS: ${{ inputs.flavors }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')/nginx"
+          wanted=",${REQUESTED_FLAVORS// /},"
+          selected=""
+
+          while IFS= read -r v; do
+            version=$(jq -r .version <<< "$v")
+            series=$(jq -r .series <<< "$v")
+            channel=$(jq -r .channel <<< "$v")
+            newest_in_series=$(jq -r .newest_in_series <<< "$v")
+
+            # Every Docker Hub tag "<version>" or "<version>-<flavor>" with its
+            # linux platforms. Windows-only tags have no linux platform.
+            url="https://hub.docker.com/v2/namespaces/library/repositories/nginx/tags?page_size=100&name=${version}"
+            while [ -n "$url" ]; do
+              page=$(curl -fsSL --retry 3 "$url")
+              while IFS= read -r row; do
+                [ -n "$row" ] || continue
+                flavor=$(jq -r .flavor <<< "$row")
+                key=${flavor:-default}
+                if [ "$wanted" != ",," ] && [[ "$wanted" != *",$key,"* ]]; then
+                  continue
+                fi
+                s=${flavor:+-$flavor}
+                tags=("$version$s")
+                [ "$newest_in_series" = "true" ] && tags+=("$series$s")
+                if [ "$channel" = "mainline" ]; then
+                  tags+=("mainline$s")
+                  tags+=("${flavor:-latest}")
+                elif [ "$channel" = "stable" ]; then
+                  tags+=("stable$s")
+                fi
+                if [ "$GITHUB_EVENT_NAME" = "schedule" ] \
+                   && docker buildx imagetools inspect "$IMAGE:$version$s" > /dev/null 2>&1; then
+                  echo "$IMAGE:$version$s exists"
+                  continue
+                fi
+                echo "build $version$s ($(jq -r .platforms <<< "$row"))"
+                selected+=$(jq -c --arg v "$version" --arg t "$(IFS=,; echo "${tags[*]}")" \
+                  '. + {version: $v, nginx_tag: ($v + (if .flavor == "" then "" else "-" + .flavor end)), tags: $t}' <<< "$row")$'\n'
+              done < <(jq -c --arg v "$version" '
+                .results[]
+                | select(.name == $v or (.name | startswith($v + "-")))
+                | { flavor: (if .name == $v then "" else (.name | ltrimstr($v + "-")) end),
+                    platforms: ([.images[]?
+                                 | select(.os == "linux" and .architecture != "unknown")
+                                 | "linux/\(.architecture)\(if (.variant // "") != "" then "/" + .variant else "" end)"]
+                                | unique | join(",")) }
+                | select(.platforms != "")' <<< "$page")
+              url=$(jq -r '.next // ""' <<< "$page")
+            done
+          done < <(jq -c '.[]' <<< "$VERSIONS")
+
+          echo "matrix=$(printf '%s' "$selected" | jq -sc '{include: .}')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.images)
+      && fromJSON(needs.detect.outputs.matrix).include[0] != null
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    name: build (${{ matrix.nginx_tag }})
+    env:
+      NGINX_TAG: ${{ matrix.nginx_tag }}
+      PLATFORMS: ${{ matrix.platforms }}
+      TAGS: ${{ matrix.tags }}
+      GIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build for smoke test
+        id: smoke-build
+        run: |
+          if [[ ",$PLATFORMS," != *",linux/amd64,"* ]]; then
+            echo "::notice::$NGINX_TAG has no linux/amd64 image; smoke test skipped"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          docker buildx build \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg NGINX_TAG="$NGINX_TAG" \
+            --platform linux/amd64 \
+            -f module/docker/Dockerfile \
+            -t nginx-prometheus:smoke \
+            --load .
+          echo "run=true" >> "$GITHUB_OUTPUT"
+
+      - name: Smoke test
+        if: steps.smoke-build.outputs.run == 'true'
+        run: |
+          set -euo pipefail
+          docker run -d --name smoke nginx-prometheus:smoke
+          probe() { docker run --rm --network container:smoke curlimages/curl -sS --retry 10 --retry-connrefused --retry-delay 1 -m 15 "$@"; }
+
+          # the stock server still answers as before
+          probe -o /dev/null http://127.0.0.1/
+          probe -o /dev/null http://127.0.0.1/orders/8231 || true
+          [ "$(probe http://127.0.0.1:9145/healthz)" = "ok" ]
+
+          metrics=$(probe http://127.0.0.1:9145/metrics)
+          echo "$metrics" | grep -E '^nginx_http_requests_total'
+          echo "$metrics" | grep -q 'route="/",status="200"'
+          echo "$metrics" | grep -q 'route="/orders/$param",status="404"'
+          echo "$metrics" | grep -q '^nginx_http_connections{state="active"}'
+          echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
+          # defaults: histograms off, the metrics server itself not recorded
+          if echo "$metrics" | grep -q '_histogram_bucket'; then
+            echo "::error::a histogram is on by default"; exit 1
+          fi
+          if echo "$metrics" | grep -q 'route="/metrics"'; then
+            echo "::error::the metrics server is recorded"; exit 1
+          fi
+          # 1 = doesn't parse; 3 = lint findings only (the names are the sidecar's)
+          rc=0
+          echo "$metrics" | docker run --rm -i --entrypoint promtool prom/prometheus check metrics || rc=$?
+          [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || { echo "::error::promtool: exit $rc"; exit 1; }
+
+      - name: Smoke test logs
+        if: always() && steps.smoke-build.outputs.run == 'true'
+        run: |
+          docker logs smoke 2>&1 | tail -n 100
+          if docker logs smoke 2>&1 | grep -E '\[(emerg|alert|crit)\]'; then
+            echo "::error::nginx logged fatal errors"; exit 1
+          fi
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')/nginx"
+
+          tag_args=()
+          IFS=, read -ra tags <<< "$TAGS"
+          for t in "${tags[@]}"; do tag_args+=(-t "$IMAGE:$t"); done
+
+          docker buildx build \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg NGINX_TAG="$NGINX_TAG" \
+            --platform "$PLATFORMS" \
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
+            --label org.opencontainers.image.revision="$GIT_SHA" \
+            --label org.opencontainers.image.version="$NGINX_TAG" \
+            --label org.opencontainers.image.base.name="docker.io/library/$BASE_IMAGE:$NGINX_TAG" \
+            -f module/docker/Dockerfile \
+            "${tag_args[@]}" \
+            --push .
+
+          {
+            echo "### $NGINX_TAG"
+            echo "base \`$BASE_IMAGE:$NGINX_TAG\` · \`$PLATFORMS\` · commit \`${GIT_SHA::7}\`"
+            echo
+            printf -- '- `%s`\n' "${tags[@]/#/$IMAGE:}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  assets:
+    needs: detect
+    if: >-
+      github.event_name == 'schedule'
+      || (github.event_name == 'workflow_dispatch' && inputs.assets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.detect.outputs.versions) }}
+    name: assets (nginx ${{ matrix.version }})
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ matrix.version }}
+    steps:
+      - id: release
+        run: |
+          set -euo pipefail
+          tag=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "::notice::no release yet; nothing to attach"
+            echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          have=$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          missing=false
+          for libc in glibc musl; do
+            for arch in amd64 arm64; do
+              f="ngx_http_prometheus_module-$tag-nginx-$VERSION-linux-$arch-$libc.so"
+              printf '%s\n' "$have" | grep -qx "$f" || missing=true
+            done
+          done
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "missing=$missing" >> "$GITHUB_OUTPUT"
+          echo "release $tag, nginx $VERSION assets missing: $missing"
+
+      - if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
+        uses: docker/setup-qemu-action@v3
+      - if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and attach
+        if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          files=()
+          # glibc from the debian flavor, musl from alpine
+          for libc in glibc musl; do
+            base="$VERSION"
+            [ "$libc" = musl ] && base="$VERSION-alpine"
+            docker buildx build \
+              --build-arg BASE_IMAGE="$BASE_IMAGE" \
+              --build-arg NGINX_TAG="$base" \
+              --platform linux/amd64,linux/arm64 \
+              -f module/docker/Dockerfile \
+              --target module \
+              --output "type=local,dest=out/$libc" .
+            for arch in amd64 arm64; do
+              f="ngx_http_prometheus_module-$TAG-nginx-$VERSION-linux-$arch-$libc.so"
+              cp "out/$libc/linux_$arch/ngx_http_prometheus_module.so" "$f"
+              sha256sum "$f" > "$f.sha256"
+              files+=("$f" "$f.sha256")
+            done
+          done
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
+          printf -- '- `%s`\n' "${files[@]}" >> "$GITHUB_STEP_SUMMARY"

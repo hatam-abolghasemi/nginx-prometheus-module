@@ -5,7 +5,7 @@ name: Retry
 # its own workflow and fires once the watched run has completed.
 on:
   workflow_run:
-    workflows: [OpenResty image]
+    workflows: [OpenResty image, nginx image]
     types: [completed]
 
 permissions:

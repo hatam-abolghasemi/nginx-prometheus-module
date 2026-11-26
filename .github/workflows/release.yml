@@ -1,8 +1,9 @@
 name: Release
 
-# Project releases are decoupled from image tags. Image tags mirror
-# docker-openresty's (<openresty-tag>-<flavor> and friends); a GitHub Release
-# marks a milestone of THIS project's capabilities.
+# Project releases are decoupled from image tags. Image tags mirror the
+# upstream images' own (nginx:<tag>, openresty/openresty:<tag>); a GitHub
+# Release marks a milestone of THIS project's capabilities. Once the release
+# exists, nginx-image.yml is dispatched to attach the prebuilt .so files.
 #
 # Cut one: move CHANGELOG.md's "Unreleased" entries under a new "## vX.Y.Z — date"
 # heading, commit, then  git tag vX.Y.Z && git push origin vX.Y.Z
@@ -20,6 +21,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   release:
@@ -39,3 +41,8 @@ jobs:
           else
             gh release create "$TAG" --title "$TAG" --verify-tag --notes-file "$RUNNER_TEMP/notes.md"
           fi
+      - name: Attach the prebuilt modules
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run nginx-image.yml -R "$GITHUB_REPOSITORY" -f images=false -f assets=true
