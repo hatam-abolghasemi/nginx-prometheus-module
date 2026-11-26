@@ -13,6 +13,11 @@
 #                            (space separated) resolved by reverse DNS.
 #   CLUSTER_IP_PREFIX=10.233.  Host headers that are IPs in it are labelled
 #                            "kubernetes" instead of "$ip".
+#   OUTBOUND=off             no outbound proxy. On by default: a forward
+#                            proxy on 127.0.0.1:3128 for the app's egress
+#                            (HTTP_PROXY / HTTPS_PROXY), recorded as mode="1".
+#                            HTTPS goes through as CONNECT on nginx 1.31+ (the
+#                            tunnel module); on older nginx, plain HTTP only.
 #
 # Everything else is plain nginx config: mount more files into conf.d/.
 set -eu
@@ -32,7 +37,7 @@ fi
 
 rm -f /etc/nginx/conf.d/default.conf
 
-{
+inbound() {
     echo "# Generated at start by /docker-entrypoint.d/40-prometheus-sidecar.sh"
     echo
     echo "prometheus_identity on;"
@@ -90,6 +95,104 @@ server {
     }
 }
 EOF
-} > "$conf"
+}
 
-echo "$0: sidecar for 127.0.0.1:$APP_PORT${POD_CIDR:+, callers in $POD_CIDR}"
+# $1: the DNS server; $2: non-empty when CONNECT can be relayed
+outbound() {
+    cat <<EOF
+
+# outbound: a forward proxy for the app's egress, loopback only. Point the
+# app's HTTP_PROXY / HTTPS_PROXY at http://127.0.0.1:3128.
+server {
+    listen       127.0.0.1:3128;
+    server_name  outbound;
+
+    resolver          $1 ipv6=off valid=10s;
+    resolver_timeout  5s;
+
+    prometheus_mode 1;
+
+    location / {
+EOF
+
+    if [ -n "$2" ]; then
+        cat <<'EOF'
+        # HTTPS: the tunnel is relayed as is; host and port are recorded
+        if ($request_method = CONNECT) {
+            tunnel_pass;
+        }
+
+EOF
+    fi
+
+    cat <<'EOF'
+        proxy_pass               http://$http_host$request_uri;
+        proxy_http_version       1.1;
+        proxy_set_header         Host                $http_host;
+        proxy_set_header         Upgrade             $http_upgrade;
+        proxy_set_header         Connection          $prometheus_connection_upgrade;
+        proxy_set_header         Proxy-Connection    "";
+        proxy_set_header         Proxy-Authorization "";
+        proxy_pass_header        Server;
+        proxy_pass_header        Date;
+        proxy_redirect           off;
+        proxy_buffering          off;
+        proxy_request_buffering  off;
+        proxy_buffer_size        32k;
+        proxy_buffers            4 32k;
+        proxy_connect_timeout    10s;
+        proxy_send_timeout       300s;
+        proxy_read_timeout       300s;
+    }
+EOF
+
+    if [ -n "$2" ]; then
+        cat <<'EOF'
+
+    tunnel_connect_timeout  10s;
+    tunnel_read_timeout     300s;
+    tunnel_send_timeout     300s;
+EOF
+    fi
+
+    echo "}"
+}
+
+inbound > "$conf"
+
+said=""
+
+if [ "${OUTBOUND:-on}" != "off" ]; then
+    # names are resolved the way the app resolves them: the pod's own DNS
+    dns=$(awk '$1 == "nameserver" && $2 ~ /^[0-9.]+$/ { print $2; exit }' \
+          /etc/resolv.conf 2>/dev/null || true)
+
+    if [ -z "$dns" ]; then
+        echo "$0: no IPv4 nameserver in /etc/resolv.conf; outbound is off" >&2
+    else
+        # CONNECT needs the tunnel module: built in since nginx 1.31
+        version=$(nginx -v 2>&1 | sed -n 's#^nginx version: nginx/##p')
+        major=${version%%.*}
+        rest=${version#*.}
+        minor=${rest%%.*}
+        tunnel=""
+
+        if [ "${major:-0}" -gt 1 ] \
+           || { [ "${major:-0}" -eq 1 ] && [ "${minor:-0}" -ge 31 ]; }
+        then
+            if ! nginx -V 2>&1 | grep -q -- '--without-http_tunnel_module'; then
+                tunnel=1
+            fi
+        fi
+
+        outbound "$dns" "$tunnel" >> "$conf"
+
+        if [ -n "$tunnel" ]; then
+            said=", outbound on 127.0.0.1:3128"
+        else
+            said=", outbound on 127.0.0.1:3128 (HTTP only: HTTPS needs nginx 1.31+)"
+        fi
+    fi
+fi
+
+echo "$0: sidecar for 127.0.0.1:$APP_PORT${POD_CIDR:+, callers in $POD_CIDR}$said"

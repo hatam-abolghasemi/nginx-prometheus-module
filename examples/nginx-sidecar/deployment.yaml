@@ -5,6 +5,7 @@
 #   sidecar          clients reach the pod on :80, nginx forwards to the app
 #   caller identity  callers in POD_CIDR are named by reverse DNS
 #   own identity     the pod finds its own Service name (on with APP_PORT)
+#   outbound         the app's HTTP(S)_PROXY points at 127.0.0.1:3128
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -27,10 +28,19 @@ spec:
         ports:
         - name: app
           containerPort: 8080
+        env:
+        # outbound: the app's egress goes through the sidecar
+        - { name: HTTP_PROXY,  value: "http://127.0.0.1:3128" }
+        - { name: HTTPS_PROXY, value: "http://127.0.0.1:3128" }
+        - { name: NO_PROXY,    value: "127.0.0.1,localhost" }
+        - { name: http_proxy,  value: "http://127.0.0.1:3128" }
+        - { name: https_proxy, value: "http://127.0.0.1:3128" }
+        - { name: no_proxy,    value: "127.0.0.1,localhost" }
 
       - name: nginx
         # pin a tag from docs/images.md, e.g. <nginx-version>-alpine
-        image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:stable-alpine
+        # mainline (1.31+) for HTTPS through outbound; stable is plain HTTP only
+        image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:mainline-alpine
         env:
         - { name: APP_PORT, value: "8080" }
         - { name: POD_CIDR, value: "10.233.0.0/16" }     # your cluster's pod range

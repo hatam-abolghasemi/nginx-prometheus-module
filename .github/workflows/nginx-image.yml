@@ -250,8 +250,21 @@ jobs:
 
           [ "$(probe http://127.0.0.1/orders/42)" = "app-ok" ]
           docker logs smoke-sidecar 2>&1 | grep -q 'sidecar for 127.0.0.1:8080'
+
+          # outbound: plain HTTP always, CONNECT where the tunnel module is
+          [ "$(probe -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 http://example.com/)" = "200" ]
+          tunnel=false
+          if docker logs smoke-sidecar 2>&1 | grep -q 'outbound on 127.0.0.1:3128$'; then
+            tunnel=true
+            [ "$(probe -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 https://example.com/)" = "200" ]
+          fi
+
           metrics=$(probe http://127.0.0.1:9145/metrics)
           echo "$metrics" | grep -q 'route="/orders/$param",status="200"'
+          echo "$metrics" | grep -q 'method="GET",route="/",status="200",host="example.com",mode="1"'
+          if $tunnel; then
+            echo "$metrics" | grep -q 'method="CONNECT",route="example.com:443",status="200",host="example.com",mode="1",protocol="tunnel"'
+          fi
           echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
 
       - name: Smoke test logs
