@@ -43,6 +43,7 @@ goes through outbound.
 | [The module](module.md) | ngx_http_prometheus_module for stock nginx: features, install, directives, metrics, labels, how it works |
 | [Module: sidecar](module-sidecar.md) | The nginx image in front of your app with `APP_PORT` |
 | [Module: caller identity](module-identity.md) | `source_service` / `source_namespace`, `app` / `namespace`, `client_subnet` |
+| [Module: outbound](module-outbound.md) | The app's egress through `127.0.0.1:3128`, recorded as `mode="1"` |
 | [Images](images.md) | The nginx and OpenResty images, their tags, pinning by digest |
 | [Metrics reference](metrics-reference.md) | Every metric and label, cardinality notes, example PromQL |
 | [Grafana dashboard](../grafana/) | Ready-to-import dashboard: summary, request breakdown, latency, payload sizes, connections, L4 streams |

@@ -13,6 +13,35 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.2.0 — 2026-11-27
+
+### 2026-11-27
+
+- **Plug and play: `load_module` is the whole setup.** With no
+  `prometheus_zone`, a 4m zone is made; with no `prometheus;` location
+  anywhere, the module opens `:9145` itself (`prometheus_listen`) and serves
+  `/metrics` and `/healthz` there, whatever `nginx.conf` and its servers are.
+  That listener is the module's own, not an `http{}` server: nothing in the
+  config can shadow it and scrapes are never recorded. If a server already
+  listens on the port, nginx still starts and the module says so in the error
+  log. `prometheus_listen off` and `prometheus_zone off` opt out.
+- **Changed:** a config that loads the module and has a `prometheus_zone` but
+  no `prometheus;` location now gets the `:9145` listener (before, nothing was
+  served). The nginx image drops its `conf.d/prometheus.conf`, which only
+  existed to do this; the image is now upstream plus one `load_module` line and
+  the sidecar script.
+- **Outbound in the sidecar**: with `APP_PORT`, a forward proxy on
+  `127.0.0.1:3128` for the app's egress (`HTTP(S)_PROXY`), recorded as
+  `mode="1"`, resolving names with the pod's DNS. Plain HTTP is recorded in
+  full; HTTPS as a `CONNECT` tunnel through nginx's tunnel module (nginx 1.31+;
+  on the stable line, plain HTTP only and the log says so). `OUTBOUND=off`
+  turns it off. Guide: [docs/module-outbound.md](docs/module-outbound.md).
+- **A CONNECT's route is its target**, `host:port`, with the host classified
+  like the `host` label (`$ip`, `kubernetes`), instead of the empty URI.
+- Tests: `tests/plug_test.sh` (load_module alone, the listener, a taken port,
+  reloads, opting out) and `tests/outbound_test.sh` (plain HTTP and CONNECT
+  through a proxy); the image smoke test checks outbound to the internet.
+
 ## v2.1.0 — 2026-11-26
 
 ### 2026-11-26

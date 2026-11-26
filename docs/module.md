@@ -15,12 +15,12 @@ Lua, no exporter process, no access logs to ship.
 
 ```
 the module (stock nginx, or the nginx image)
-├── metrics              on with prometheus_zone; every request nginx serves
+├── metrics              on as soon as it's loaded: :9145/metrics
 ├── sidecar (inbound)    image: APP_PORT; own nginx: a proxy_pass server
 │   ├── own identity     on with the sidecar; app / namespace labels
-│   └── caller identity  image: POD_CIDR; own nginx: prometheus_source_ptr
-├── outbound             coming in v2.2
-│   └── https interception   coming in v2.4; needs outbound
+│   ├── caller identity  image: POD_CIDR; own nginx: prometheus_source_ptr
+│   └── outbound         on with the sidecar; the app sets HTTP(S)_PROXY
+│       └── https interception   coming in v2.4; needs outbound
 └── stream (L4)          coming in v2.3
 ```
 
@@ -29,10 +29,11 @@ the module (stock nginx, or the nginx image)
 | [metrics](#configure) | Requests by method, route, status, host; latency, sizes, upstream timing, connections | `prometheus_zone` + a `prometheus;` location |
 | [sidecar](module-sidecar.md) | The image in front of your app on Kubernetes or Docker, nothing in the app changes | `APP_PORT` |
 | [caller identity](module-identity.md) | Which service and namespace called you (`source_service`, `source_namespace`), who this pod is (`app`, `namespace`), `client_subnet` | `POD_CIDR`, or the `prometheus_source_*` directives |
+| [outbound](module-outbound.md) | The calls your app makes: plain HTTP in full, HTTPS as `CONNECT host:port` (nginx 1.31+) | `HTTP(S)_PROXY=http://127.0.0.1:3128` on the app |
 
 Caller identity works on any nginx, the sidecar only makes it one variable.
 What the [OpenResty sidecar](README.md) has that the module doesn't yet:
-outbound, https interception, stream.
+https interception and stream.
 
 ## Install
 
@@ -46,10 +47,11 @@ docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx-prometheus-modu
 curl -s localhost:9145/metrics
 ```
 
-The image is the upstream image plus two files: `load_module` at the top of
-`/etc/nginx/nginx.conf`, and `/etc/nginx/conf.d/prometheus.conf` (the zone and
-the `:9145` server). Your own `conf.d/*.conf` works as before. If you replace
-`nginx.conf` itself, keep the `load_module` line. Tags: [images](images.md).
+The image is the upstream image plus one line, `load_module` at the top of
+`/etc/nginx/nginx.conf`, and the [sidecar](module-sidecar.md) script that does
+nothing unless `APP_PORT` is set. Your own `conf.d/*.conf`, or a whole
+`nginx.conf` of your own, works as before; if you replace `nginx.conf`, keep the
+`load_module` line. Tags: [images](images.md).
 
 ### A prebuilt `.so`
 
@@ -92,23 +94,45 @@ Building the module takes about a second. If your nginx was built without
 
 ## Configure
 
+Loading it is all it takes:
+
 ```nginx
-load_module modules/ngx_http_prometheus_module.so;   # main context
+load_module modules/ngx_http_prometheus_module.so;   # main context, first lines
+```
 
+Every request in every `http{}` server is recorded, and the module listens on
+**`:9145`** by itself, whatever the rest of the configuration is:
+
+```bash
+curl -s localhost:9145/metrics
+curl -s localhost:9145/healthz     # ok
+```
+
+That listener is the module's own, not an `http{}` server: no location or
+`server_name` of yours can shadow it, and scrapes are never recorded. With no
+`prometheus_zone`, a 4m zone is made.
+
+To serve the metrics somewhere else instead, from any server you like, put a
+`prometheus;` location in it; the module then opens no port of its own:
+
+```nginx
 http {
-    prometheus_zone 4m;
-
     server {
-        listen 9145;
-        location = /metrics { prometheus; }
+        listen 8080;
+        location = /metrics { prometheus; }     # not recorded itself
     }
-
-    # your servers, unchanged: every request in them is recorded
 }
 ```
 
-That's all. A location with `prometheus;` is not recorded itself; the metrics
-cover every other request.
+| You want | Set |
+|---|---|
+| another port or address for the built-in listener | `prometheus_listen 127.0.0.1:9113;` |
+| no listener of its own | a `prometheus;` location, or `prometheus_listen off;` |
+| a bigger zone (many routes, histograms) | `prometheus_zone 16m;` |
+| the module loaded but doing nothing | `prometheus_zone off;` |
+
+If a server of yours already listens on the built-in port, nginx still starts:
+the module leaves the port to it and says so in the error log.
 
 ## Directives
 
@@ -117,7 +141,8 @@ set per server or location.
 
 | Directive | Default | Context | |
 |---|---|---|---|
-| `prometheus_zone <size>;` | — | http | Shared memory for all workers. Required: without it nothing is recorded. 4m holds several thousand label sets with gauges; histograms take more |
+| `prometheus_zone <size>\|off;` | `4m` | http | Shared memory for all workers. 4m holds several thousand label sets with gauges; histograms take more. `off`: record and serve nothing |
+| `prometheus_listen <address>\|off;` | `9145` | http | The built-in listener for `/metrics` and `/healthz`, when no `prometheus;` location exists |
 | `prometheus_metric <name> on\|off;` | see [metrics](#metrics) | http | Turns one metric on or off |
 | `prometheus_label <name> on\|off;` | see [labels](#labels) | http | Turns one request label on or off |
 | `prometheus_buckets <histogram> <le>...;` | see [metrics](#metrics) | http | Histogram buckets, increasing, at most 32 |

@@ -5,8 +5,8 @@ The [nginx image](images.md#nginx) as a sidecar: clients reach your pod on
 client sent it, and every request is recorded. Nothing in the app changes.
 
 Turn on with one variable, `APP_PORT`. It's the base for
-[caller identity](module-identity.md) (one more variable, `POD_CIDR`), and
-coming next for outbound and interception.
+[caller identity](module-identity.md) (one more variable, `POD_CIDR`) and
+[outbound](module-outbound.md) (on with it; the app sets `HTTP(S)_PROXY`).
 
 ---
 
@@ -32,7 +32,7 @@ upstream response time is what the app took. Every metric and label:
 
 ```yaml
 - name: nginx
-  image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:stable-alpine  # pin a tag, docs/images.md
+  image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:mainline-alpine  # pin a tag, docs/images.md; mainline for HTTPS outbound
   env:
     - { name: APP_PORT, value: "8080" }            # the port your app listens on
   ports:
@@ -55,7 +55,7 @@ reaches it.
 ```bash
 docker run -d --name app -p 80:80 -p 9145:9145 your-app:latest
 docker run -d --name nginx --network container:app -e APP_PORT=8080 \
-  ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:stable-alpine
+  ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:mainline-alpine
 ```
 
 ### 2. Scrape `:9145/metrics`
@@ -96,11 +96,13 @@ and writes `/etc/nginx/conf.d/sidecar.conf`:
   through; nothing is added (no `X-Forwarded-*`), so the app sees `127.0.0.1`
   as its peer;
 - `prometheus_identity on`, so the pod finds its own Service name
-  ([own identity](module-identity.md#own-identity)).
+  ([own identity](module-identity.md#own-identity));
+- the [outbound](module-outbound.md) forward proxy on `127.0.0.1:3128`, with
+  the pod's DNS server from `/etc/resolv.conf`.
 
-It removes `conf.d/default.conf`, which also listens on `:80`. Metrics live on
-`:9145`, never `:80`: a scrape is not app traffic, and the sidecar's own paths
-never shadow the app's.
+It removes `conf.d/default.conf`, which also listens on `:80`. Metrics are
+served by the module itself on `:9145`, never `:80`: a scrape is not app
+traffic, and the sidecar's own paths never shadow the app's.
 
 Without `APP_PORT` the script does nothing, and the image is stock nginx with
 metrics.
@@ -110,6 +112,7 @@ metrics.
 | `APP_PORT` | — | Turns the sidecar on: the app's port |
 | `POD_CIDR` | — | [Caller identity](module-identity.md): the pod ranges, space separated, e.g. `10.233.0.0/16` |
 | `CLUSTER_IP_PREFIX` | — | A `Host` that is an IP starting with this (e.g. `10.233.`) is labelled `kubernetes` |
+| `OUTBOUND` | on | `off`: no forward proxy on `127.0.0.1:3128` |
 
 Anything else is plain nginx: mount more `.conf` files into
 `/etc/nginx/conf.d/` (they're included at the `http{}` level) to add

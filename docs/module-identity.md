@@ -55,8 +55,6 @@ the pod's own, from `/etc/resolv.conf`.
 
 ```nginx
 http {
-    prometheus_zone 4m;
-
     prometheus_label source_service on;
     prometheus_label source_namespace on;
     prometheus_source_ptr 10.233.0.0/16;                  # the pod CIDR

@@ -15,12 +15,11 @@ logs to ship.
 
 ```nginx
 load_module modules/ngx_http_prometheus_module.so;
-
-http {
-    prometheus_zone 4m;
-    server { listen 9145; location = /metrics { prometheus; } }
-}
 ```
+
+That one line is the whole setup: every request is recorded, and the module
+serves them on `:9145/metrics` by itself, whatever the rest of your
+configuration is.
 
 ```
 nginx_http_requests_total{method="GET",route="/orders/$param",status="200",host="api.example.com",mode="0",protocol="https"} 1027
@@ -29,9 +28,10 @@ nginx_http_requests_total{method="GET",route="/orders/$param",status="200",host=
 IDs, UUIDs and hashes collapse to `$param`, so an order id is not a time
 series. On Kubernetes it also tells you **who called** (`source_service`,
 `source_namespace`) and runs as a sidecar in front of your app with one
-variable, `APP_PORT` ([sidecar](docs/module-sidecar.md),
-[caller identity](docs/module-identity.md)). Get it as an image (every official `nginx` tag, rebuilt), a prebuilt
-`.so` from the [releases](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases),
+variable, `APP_PORT`, recording your app's outbound calls as well
+([sidecar](docs/module-sidecar.md), [caller identity](docs/module-identity.md),
+[outbound](docs/module-outbound.md)). Get it as an image (every
+official `nginx` tag, rebuilt), a prebuilt `.so` from the [releases](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases),
 or built from source in a second: **[the module](docs/module.md)**.
 
 ```bash
