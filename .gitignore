@@ -5,3 +5,4 @@ ca.crt
 
 # local build scratch
 *.log
+/label_test
