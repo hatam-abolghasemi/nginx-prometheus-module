@@ -1,5 +1,9 @@
 # Metrics reference
 
+> This is the OpenResty sidecar's catalog. The native module exports the same
+> names with a subset of the labels, plus upstream timing; its own list is in
+> [module.md](module.md#metrics).
+
 Every metric this exporter produces, its type, labels, and what it's for. Which
 metrics and labels are active is controlled by the `metric_*` / `label_*` flags
 in [`metrics_config.lua`](modules.md#metrics_configlua) — the lists below are the

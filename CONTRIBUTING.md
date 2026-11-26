@@ -5,8 +5,8 @@ dashboard fixes, docs and code are all welcome.
 
 ## Before you start
 
-- **Questions and ideas** go to [Discussions](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/discussions).
-- **Bugs and concrete feature requests** go to [Issues](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/issues/new/choose); the templates ask for what's needed to reproduce.
+- **Questions and ideas** go to [Discussions](https://github.com/hatam-abolghasemi/nginx-prometheus-module/discussions).
+- **Bugs and concrete feature requests** go to [Issues](https://github.com/hatam-abolghasemi/nginx-prometheus-module/issues/new/choose); the templates ask for what's needed to reproduce.
 - **Security problems** never go in a public issue; see [SECURITY.md](SECURITY.md).
 - For anything bigger than a small fix, open an issue or discussion first so we
   agree on the approach before you write the code.
@@ -32,6 +32,33 @@ way, and step-by-step recipes for
 
 ## Running the tests
 
+### The module
+
+The label code (route sanitizer, Host classifier, escaping) builds and runs on
+its own:
+
+```bash
+cc -Wall -Wextra -Werror -fsanitize=address,undefined -Imodule \
+   -o label_test tests/label_test.c module/ngx_http_prometheus_label.c && ./label_test
+```
+
+Then the module in a real nginx, from the nginx source of any version
+(`--with-cc-opt='-fsanitize=address,undefined'` for a checked build):
+
+```bash
+./auto/configure --prefix="$PWD/out" --with-compat --with-http_stub_status_module \
+    --with-http_ssl_module --add-dynamic-module=/path/to/nginx-prometheus-module/module
+make -j && make install
+sh /path/to/nginx-prometheus-module/tests/module_test.sh out/sbin/nginx \
+    out/modules/ngx_http_prometheus_module.so
+```
+
+It uses ports 18080, 18081 and 19145, and checks the output with `promtool`
+when it's on `PATH`. nginx's own style applies to `module/`: 4 spaces, 80
+columns, declarations at the top of a block, `ngx_` names.
+
+### The OpenResty sidecar
+
 The unit tests need only LuaJIT (or Lua 5.1), no nginx:
 
 ```bash
@@ -43,7 +70,7 @@ To see your change end to end, build the image and run the quickstart against it
 ```bash
 docker build -f docker/Dockerfile --build-arg OPENRESTY_TAG=alpine -t ope:dev .
 cd examples/quickstart
-sed -i 's#ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter:latest#ope:dev#' docker-compose.yml
+sed -i 's#ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:latest#ope:dev#' docker-compose.yml
 docker compose up -d
 curl -s localhost:9145/metrics | grep -v '^#' | head -40
 ```

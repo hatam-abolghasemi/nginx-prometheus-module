@@ -1,25 +1,48 @@
-# openresty-prometheus-exporter
+# nginx-prometheus-module
 
-[![Tests](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/actions/workflows/tests.yml/badge.svg)](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/actions/workflows/tests.yml)
-[![Image](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/actions/workflows/openresty-image.yml/badge.svg)](docs/images.md)
-[![Release](https://img.shields.io/github/v/release/hatam-abolghasemi/openresty-prometheus-exporter)](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/releases)
+[![Module tests](https://github.com/hatam-abolghasemi/nginx-prometheus-module/actions/workflows/module.yml/badge.svg)](https://github.com/hatam-abolghasemi/nginx-prometheus-module/actions/workflows/module.yml)
+[![nginx image](https://github.com/hatam-abolghasemi/nginx-prometheus-module/actions/workflows/nginx-image.yml/badge.svg)](docs/images.md)
+[![OpenResty image](https://github.com/hatam-abolghasemi/nginx-prometheus-module/actions/workflows/openresty-image.yml/badge.svg)](docs/images.md)
+[![Release](https://img.shields.io/github/v/release/hatam-abolghasemi/nginx-prometheus-module)](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/hatam-abolghasemi/openresty-prometheus-exporter?style=flat)](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/stargazers)
+[![Stars](https://img.shields.io/github/stars/hatam-abolghasemi/nginx-prometheus-module?style=flat)](https://github.com/hatam-abolghasemi/nginx-prometheus-module/stargazers)
 
-**The metrics you'd expect nginx to expose on `/metrics` — but it doesn't.**
-Inbound and outbound L7 with sanitized routes and real status codes, decrypted
-HTTPS details, L4 (TCP/UDP) from the app's own point of view, and caller
-identity — all cardinality-safe, scrape-ready, with no access-log shipping and
-no service mesh.
+**The metrics you'd expect nginx to expose on `/metrics` — now it does.**
+A native nginx module: requests by method, sanitized route, status and host,
+latency, sizes, upstream timing and connections, kept in shared memory and
+served by nginx itself. Stock nginx, no Lua, no exporter process, no access
+logs to ship.
 
-Built on [OpenResty](https://openresty.org/) (nginx + Lua). It runs as a
-reverse proxy, a forward proxy, and an L4 stream proxy; the metrics come from a
-set of OpenResty Lua modules, exposed on a Prometheus endpoint.
+```nginx
+load_module modules/ngx_http_prometheus_module.so;
 
-> Requires OpenResty, or nginx built with `lua-nginx-module` — not stock nginx.
-> The easiest path is the prebuilt image. Caller identity (`source_service` /
-> `source_namespace`) resolves on **Kubernetes**; under plain Docker everything
-> else works, you just don't get those two labels.
+http {
+    prometheus_zone 4m;
+    server { listen 9145; location = /metrics { prometheus; } }
+}
+```
+
+```
+nginx_http_requests_total{method="GET",route="/orders/$param",status="200",host="api.example.com",mode="0",protocol="https"} 1027
+```
+
+IDs, UUIDs and hashes collapse to `$param`, so an order id is not a time
+series. Get it as an image (every official `nginx` tag, rebuilt), a prebuilt
+`.so` from the [releases](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases),
+or built from source in a second: **[the module](docs/module.md)**.
+
+```bash
+docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:alpine
+```
+
+## The OpenResty sidecar
+
+The same metrics and more, for when you need what a native module doesn't do
+yet: **outbound** calls (a forward proxy for the app's egress), **decrypted
+HTTPS and gRPC** inside them, **L4** streams (Redis, databases) and **caller
+identity** (`source_service` / `source_namespace` on Kubernetes). Built on
+[OpenResty](https://openresty.org/) (nginx + Lua), run as a sidecar beside your
+app.
 
 ![Grafana dashboard: inbound and outbound requests per second, 5xx ratio and latency, and a table of sanitized routes with status, latency and the calling namespace/service](docs/assets/dashboard-summary.png)
 
@@ -27,14 +50,13 @@ set of OpenResty Lua modules, exposed on a Prometheus endpoint.
 and outbound (`out`) side by side, IDs collapsed to `$param`, and the caller's
 namespace and service on every row.</sub>
 
-## Try it in a minute
+### Try it in a minute
 
-No Kubernetes needed. This brings up a demo app with the exporter as its
-sidecar, generated traffic, Prometheus, and Grafana with the dashboard loaded:
+No Kubernetes needed. This brings up a demo app with the sidecar, generated traffic, Prometheus, and Grafana with the dashboard loaded:
 
 ```bash
-git clone https://github.com/hatam-abolghasemi/openresty-prometheus-exporter.git
-cd openresty-prometheus-exporter/examples/quickstart
+git clone https://github.com/hatam-abolghasemi/nginx-prometheus-module.git
+cd nginx-prometheus-module/examples/quickstart
 docker compose up -d
 ```
 
@@ -48,9 +70,7 @@ Watch `/anything/orders/1`, `/anything/orders/2`, … arrive as a single
 `route="/anything/orders/$param"` with the real `status` kept. More in the
 [quickstart guide](examples/quickstart/).
 
----
-
-## What you get
+### What you get
 
 A Prometheus `/metrics` endpoint with low-cardinality, well-labelled series —
 `method`, sanitized `route` (IDs/UUIDs/hashes collapsed to `$param` so you don't
@@ -63,7 +83,7 @@ to get one slice of this. This gives you the whole picture from the proxy itself
 
 Full catalog in the [metrics reference](docs/metrics-reference.md).
 
-## Features
+### Features
 
 Turn on only what you need. Click through for the step-by-step guide.
 
@@ -75,14 +95,14 @@ Turn on only what you need. Click through for the step-by-step guide.
 | [**stream**](docs/stream.md) | TCP/UDP (Redis, DB…) from the app's side | a `stream.conf` | — |
 
 ```
-ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter:<openresty-tag>-<flavor>
+ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:<openresty-tag>-<flavor>
 ```
 
 **Already run OpenResty, or nginx with `lua-nginx-module`?** You don't need the
 image — drop the Lua modules into your existing server: [running on your own
 nginx](docs/standalone-nginx.md).
 
-## Quick start
+### Quick start
 
 Run it as a sidecar beside your app (K8s) or in front of it (any OpenResty), set
 `APP_PORT` to your app's port, and scrape `:9145/metrics` (plus `:9254/metrics`
@@ -96,50 +116,41 @@ and L4 streams, one tab each.
 
 ## Documentation
 
+- **[The module](docs/module.md)** — install, directives, metrics, how it works
 - **[Documentation index](docs/README.md)** — all guides, start here
 - **[FAQ](docs/faq.md)** — why not Istio, OpenTelemetry or eBPF, limits, costs; the reasoning and trade-offs in [design decisions](docs/design-decisions.md)
-- **Features** — [inbound](docs/inbound.md) · [outbound](docs/outbound.md) · [https interception](docs/https-interception.md) · [stream](docs/stream.md) · [own nginx](docs/standalone-nginx.md)
-- **[Images](docs/images.md)** — current release, tags per flavor, pull commands
+- **OpenResty sidecar** — [inbound](docs/inbound.md) · [outbound](docs/outbound.md) · [https interception](docs/https-interception.md) · [stream](docs/stream.md) · [own nginx](docs/standalone-nginx.md)
+- **[Images](docs/images.md)** — both images, their tags, pinning
 - **[Metrics reference](docs/metrics-reference.md)** — every metric and label, with PromQL
 - **[Grafana dashboard](grafana/)** — ready to import, one tab per area
-- **[Modules](docs/modules.md)** — maintainer's guide: what each `lib/` module does, why, how to change it
+- **[Lua modules](docs/modules.md)** — the sidecar maintainer's guide: what each `lib/` module does, why, how to change it
 - **[Architecture & internals](ARCHITECTURE.md)** — the design narrative
 - **[Changelog](CHANGELOG.md)**
-- **[Contributing](CONTRIBUTING.md)**: questions go to [Discussions](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/discussions), security reports to [SECURITY.md](SECURITY.md)
+- **[Contributing](CONTRIBUTING.md)**: questions go to [Discussions](https://github.com/hatam-abolghasemi/nginx-prometheus-module/discussions), security reports to [SECURITY.md](SECURITY.md)
 
 ## Images & versioning
 
-Every [docker-openresty](https://github.com/openresty/docker-openresty) release
-is rebuilt with this project baked in, **in every flavor upstream publishes**
-(alpine, alpine-slim, bookworm, noble, rocky, …) and on the same platforms,
-smoke-tested, and pushed to GHCR. **The tags are docker-openresty's own** — swap
-the image name and keep the tag:
+Both images are rebuilt from their upstream in **every flavor it publishes**,
+on the same platforms, smoke-tested, and pushed to GHCR under **upstream's own
+tags**: swap the image name, keep the tag.
 
-| Tag | Meaning |
-|---|---|
-| `<release>-<flavor>` | that docker-openresty release, that flavor |
-| `<version>-<flavor>` | newest revision of that OpenResty version |
-| `<series>-<flavor>` | newest release in that series |
-| `<flavor>`, e.g. `alpine` | newest release |
-| `latest` | newest release, `alpine` flavor (upstream's own `latest` is bookworm) |
+```
+ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:<nginx-tag>
+ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:<openresty-tag>-<flavor>
+```
 
-**[docs/images.md](docs/images.md) lists the current release, every flavor's
-tags and platforms, and ready-to-copy pull commands** (by tag and by digest).
-The image workflow regenerates and commits it whenever the registry changes.
+The tag schemes, and how to pin by digest: [docs/images.md](docs/images.md).
 
-A tag is rebuilt when this repo's code changes, so for an immutable reference
-pin the digest (`…@sha256:…`); the image's `org.opencontainers.image.revision`
-label names the commit it was built from.
-
-GitHub **Releases** (`vX.Y.Z`) are separate — they mark this project's own
-milestones, independent of the OpenResty version. The image tag answers "which
-OpenResty am I on?"; the release answers "which version of the exporter's
-capabilities is this?". Each release's notes are its section of the
-[changelog](CHANGELOG.md), including what to check when upgrading.
+GitHub **Releases** (`vX.Y.Z`) are separate: they mark this project's own
+milestones, carry the prebuilt module `.so` files, and their notes are their
+section of the [changelog](CHANGELOG.md), including what to check when
+upgrading. The image tag answers "which nginx am I on?"; the release answers
+"which version of this project is it?".
 
 ## Built on
 
-The Prometheus client internals (counter/gauge/histogram storage and the
+The module is plain C against nginx's own API. In the OpenResty sidecar, the
+Prometheus client internals (counter/gauge/histogram storage and the
 exposition-format serializer) are vendored **unmodified** from
 [knyar/nginx-lua-prometheus](https://github.com/knyar/nginx-lua-prometheus)
 (MIT, © Anton Tolchanov), under

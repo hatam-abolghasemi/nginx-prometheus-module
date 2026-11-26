@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please **don't open a public issue**. Report it privately through GitHub:
-[**Report a vulnerability**](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/security/advisories/new).
+[**Report a vulnerability**](https://github.com/hatam-abolghasemi/nginx-prometheus-module/security/advisories/new).
 
 Include what you found, how to reproduce it, the image tag or digest (or the
 commit if you run the Lua modules on your own nginx), and the impact you see.

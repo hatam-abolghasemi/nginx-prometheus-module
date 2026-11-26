@@ -82,7 +82,7 @@
         "title": "GitHub",
         "tooltip": "openresty-prometheus-exporter",
         "type": "link",
-        "url": "https://github.com/hatam-abolghasemi/openresty-prometheus-exporter"
+        "url": "https://github.com/hatam-abolghasemi/nginx-prometheus-module"
       }
     ],
     "variables": [

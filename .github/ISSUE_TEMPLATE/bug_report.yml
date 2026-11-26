@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for reporting. Security problems go through [private reporting](https://github.com/hatam-abolghasemi/openresty-prometheus-exporter/security/advisories/new), not here.
+        Thanks for reporting. Security problems go through [private reporting](https://github.com/hatam-abolghasemi/nginx-prometheus-module/security/advisories/new), not here.
 
   - type: textarea
     id: what
@@ -37,7 +37,7 @@ body:
     id: image
     attributes:
       label: Image
-      description: Full tag or digest, e.g. `ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter:1.31.8.1-0-alpine`. On your own nginx, the commit you copied `lib/` from.
+      description: Full tag or digest, e.g. `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:1.31.8.1-0-alpine`. On your own nginx, the commit you copied `lib/` from.
     validations:
       required: true
 

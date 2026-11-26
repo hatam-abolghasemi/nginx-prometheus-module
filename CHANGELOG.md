@@ -6,12 +6,60 @@ has its own `CHANGELOG.md`.
 
 A release's section here is also its GitHub Release notes: pushing a `vX.Y.Z`
 tag publishes the `## vX.Y.Z` section below (`.github/scripts/release-notes.sh`).
-Image tags follow docker-openresty, not these versions; see
-[docs/images.md](docs/images.md).
+Image tags follow the upstream images (nginx, docker-openresty), not these
+versions; see [docs/images.md](docs/images.md).
 
 New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
+
+## v2.0.0 — 2026-11-26
+
+### 2026-11-26
+
+- **The project is now `nginx-prometheus-module`** (renamed from
+  `openresty-prometheus-exporter`; GitHub redirects the old URLs). Its centre is
+  a **native nginx module**, `ngx_http_prometheus_module`, in C under
+  `module/`: stock nginx records every HTTP request in a shared memory zone
+  and serves Prometheus metrics from a `prometheus;` location. No Lua, no
+  OpenResty, no exporter process. Setup is `load_module`, `prometheus_zone`
+  and one location ([docs/module.md](docs/module.md)).
+- **Same metric names as the sidecar**, so queries and the dashboard carry
+  over: `nginx_http_requests_total`, the last-value gauges for duration,
+  request and response size (expired by `prometheus_gauge_expiry`, 15s), their
+  opt-in histograms, `nginx_http_connections{state}`, `nginx_connection_requests`,
+  `nginx_connection_time_seconds`, `nginx_connection_slots_limit` and
+  `nginx_metric_errors_total`. Labels: `method`, `route` (the sidecar's route
+  sanitizer, same results), `status`, `host` (the sidecar's classifier),
+  `mode` (`prometheus_mode`), `protocol`. New: upstream timing of the attempt
+  that answered, `nginx_http_upstream_response_time_seconds` (on) plus
+  `_histogram`, `nginx_http_upstream_connect_time_seconds` and
+  `nginx_http_upstream_header_time_seconds` (off).
+- **Not in the module yet** (the OpenResty sidecar keeps them): outbound,
+  https interception, stream, `source_service` / `source_namespace`,
+  `client_subnet`, `app` / `namespace`. The connection metrics carry no
+  `app` / `namespace` labels; Prometheus target labels identify the instance.
+- **A new image, `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx`**:
+  every flavor of the newest mainline and stable official nginx, rebuilt with
+  the module loaded and metrics on `:9145/metrics`, under nginx's own tags
+  (`.github/workflows/nginx-image.yml`, `module/docker/`).
+- **Prebuilt `.so` files on every release**, for the newest mainline and stable
+  nginx, glibc and musl, amd64 and arm64, with a `.sha256` each. New nginx
+  versions get theirs attached to the newest release by the scheduled run.
+- **The OpenResty image moves to
+  `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty`**, same tags,
+  same contents. Images under the old name stay pullable; new builds go only to
+  the new one. Update `image:` when you next upgrade.
+- **`docs/images.md` is no longer generated** and committed by the workflow
+  (the bot's commits made it a contributor); it now describes both images'
+  tag schemes, and the GHCR package pages list the tags and digests.
+- Tests: `tests/label_test.c` (the label code on its own) and
+  `tests/module_test.sh` (the module in a real nginx, output checked by
+  promtool), run by `.github/workflows/module.yml` on the newest mainline and
+  stable nginx, with and without AddressSanitizer/UBSan.
+
+**Upgrading:** nothing changes inside the OpenResty image. Switch its `image:`
+to the new name; the old one gets no new builds.
 
 ### 2026-11-14
 

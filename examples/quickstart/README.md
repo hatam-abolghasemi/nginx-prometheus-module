@@ -5,8 +5,8 @@ demo app, two small loops generate inbound and outbound traffic, and
 Prometheus + Grafana come up with the dashboard already loaded.
 
 ```bash
-git clone https://github.com/hatam-abolghasemi/openresty-prometheus-exporter.git
-cd openresty-prometheus-exporter/examples/quickstart
+git clone https://github.com/hatam-abolghasemi/nginx-prometheus-module.git
+cd nginx-prometheus-module/examples/quickstart
 docker compose up -d
 ```
 

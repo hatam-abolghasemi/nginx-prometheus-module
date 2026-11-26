@@ -30,7 +30,7 @@ services:
       - "9145:9145"    # the exporter's /metrics
 
   sidecar:
-    image: ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter:latest
+    image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:latest
     network_mode: service:app
     environment:
       APP_PORT: "8080"

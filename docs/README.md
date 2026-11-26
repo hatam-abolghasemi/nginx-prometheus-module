@@ -1,5 +1,9 @@
 # Documentation
 
+**Stock nginx?** Everything about the native module (install, directives,
+metrics) is in [module.md](module.md). The rest of this index is the OpenResty
+sidecar.
+
 Step-by-step guides for each feature, a maintainer's reference for the
 modules, and the metrics catalog. New here? Start with the
 [project README](../README.md), or run the [quickstart](../examples/quickstart/)
@@ -36,7 +40,8 @@ goes through outbound.
 | [FAQ](faq.md) | Short answers: positioning against Istio, OpenTelemetry and eBPF, architecture, labels, coverage limits, cost, operations |
 | [Design decisions](design-decisions.md) | The reasoning behind the FAQ: each choice, what it gives up, and when another tool fits better |
 | [Modules](modules.md) | Every `lib/` module: purpose, why it's shaped that way, config keys, invariants, how to change/extend/test it safely |
-| [Images](images.md) | Current release, every flavor's tags and platforms, pull commands by tag and digest (generated) |
+| [The module](module.md) | ngx_http_prometheus_module for stock nginx: install, directives, metrics, labels, how it works |
+| [Images](images.md) | The nginx and OpenResty images, their tags, pinning by digest |
 | [Metrics reference](metrics-reference.md) | Every metric and label, cardinality notes, example PromQL |
 | [Grafana dashboard](../grafana/) | Ready-to-import dashboard: summary, request breakdown, latency, payload sizes, connections, L4 streams |
 | [Architecture & internals](../ARCHITECTURE.md) | The design narrative — trust boundaries, identity discovery, cardinality strategy, the image |

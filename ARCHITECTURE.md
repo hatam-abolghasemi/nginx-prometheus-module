@@ -1,6 +1,7 @@
 # Architecture & internals
 
-This is the technical breakdown of **openresty-prometheus-exporter**: what each
+This is the technical breakdown of the **OpenResty sidecar** (the Lua exporter;
+the native module is described in [docs/module.md](docs/module.md)): what each
 piece does, why it exists, its requirements, how to verify it, and the
 assumptions it makes. For the product overview and quick start, see
 [`README.md`](README.md).
@@ -261,7 +262,7 @@ image already exists are skipped. Pushes to `main` that touch `lib/`,
 `workflow_dispatch` takes any release (OpenResty 1.31+, for native CONNECT) and
 an optional flavor list.
 
-Tags are docker-openresty's, under `ghcr.io/<owner>/openresty-prometheus-exporter`:
+Tags are docker-openresty's, under `ghcr.io/<owner>/nginx-prometheus-module/openresty`:
 
 | Tag | Meaning |
 |---|---|
@@ -274,12 +275,9 @@ Tags are docker-openresty's, under `ghcr.io/<owner>/openresty-prometheus-exporte
 Pin by digest for an immutable reference; `org.opencontainers.image.revision`
 names the commit.
 
-After the builds, a `catalog` job reads the newest release's images back from
-GHCR and rewrites `docs/images.md` (flavors, tags, platforms, pull commands,
-digests), committing only when it changed. It runs on every scheduled run too,
-so the file catches up with flavors that appear later. No release number is
-written by hand anywhere else in the docs. `retry.yml` re-runs the failed jobs
-of a failed image run, up to 2 times.
+Each build lists its tags in the run summary; the package page on GHCR lists
+every tag and digest ([docs/images.md](docs/images.md)). `retry.yml` re-runs
+the failed jobs of a failed image run, up to 2 times.
 
 One `docker/Dockerfile` serves every flavor. `docker/setup.sh` adapts what
 differs between them: it asks `nginx -V` for the config path (so
