@@ -8,7 +8,7 @@
 # config is), and one entrypoint script that does nothing unless APP_PORT is
 # set (the sidecar).
 #
-#   docker build -f module/docker/Dockerfile --build-arg NGINX_TAG=1.31.10-alpine .
+#   docker build -f nginx/docker/Dockerfile --build-arg NGINX_TAG=1.31.10-alpine nginx
 #
 # `--target module --output type=local,dest=out` gives only the .so.
 ARG BASE_IMAGE=nginx
@@ -33,7 +33,8 @@ RUN set -eux; \
     curl -fsSL "https://github.com/nginx/nginx/archive/refs/tags/release-${version}.tar.gz" \
         | tar -xz -C /usr/src/nginx --strip-components=1
 
-COPY module/ /usr/src/ngx_http_prometheus_module/
+COPY config /usr/src/ngx_http_prometheus_module/config
+COPY src/ /usr/src/ngx_http_prometheus_module/src/
 
 # --with-compat makes the .so loadable by any nginx of this version built with
 # --with-compat (every official image is); stub_status and ssl only switch on
@@ -53,7 +54,7 @@ FROM ${BASE_IMAGE}:${NGINX_TAG}
 
 COPY --from=build /out/ngx_http_prometheus_module.so /usr/lib/nginx/modules/
 # with APP_PORT set, makes the image a sidecar in front of the app
-COPY --chmod=755 module/docker/40-prometheus-sidecar.sh /docker-entrypoint.d/
+COPY --chmod=755 docker/40-prometheus-sidecar.sh /docker-entrypoint.d/
 
 # load_module must sit in nginx.conf's main context; the stock nginx.conf has
 # no include there, so the line is put at its top.

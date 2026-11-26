@@ -241,6 +241,6 @@ caller names are sensitive.
 ### Which version should I run?
 
 Image tags follow docker-openresty (`<openresty-tag>-<flavor>`); pin by digest
-in production ([images](images.md)). Project releases (`vX.Y.Z`) mark
+in production ([images](../images.md)). Project releases (`vX.Y.Z`) mark
 capability milestones, and each one's notes list what to check when upgrading
-([changelog](../CHANGELOG.md)).
+([changelog](../../CHANGELOG.md)).

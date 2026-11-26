@@ -1,17 +1,16 @@
-name: Run Tests
+name: OpenResty tests
+
+# The Lua module (openresty/): its unit tests, and upstream's own suite against
+# the vendored nginx-lua-prometheus.
 on:
   push:
     paths:
-      - lib/**
-      - tests/**
-      - vendor/**
-      - .github/workflows/tests.yml
+      - openresty/**
+      - .github/workflows/openresty-tests.yml
   pull_request:
     paths:
-      - lib/**
-      - tests/**
-      - vendor/**
-      - .github/workflows/tests.yml
+      - openresty/**
+      - .github/workflows/openresty-tests.yml
   workflow_dispatch:
 
 jobs:
@@ -22,6 +21,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: sudo apt-get install -y --no-install-recommends luajit
       - run: luajit tests/lib_test.lua
+        working-directory: openresty
 
   # upstream's own suite, run against the vendored copy to prove it is intact
   vendor:
@@ -29,7 +29,7 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: vendor/nginx-lua-prometheus
+        working-directory: openresty/vendor/nginx-lua-prometheus
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
@@ -49,11 +49,11 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: vendor/nginx-lua-prometheus/integration
+        working-directory: openresty/vendor/nginx-lua-prometheus/integration
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v5
         with:
-          go-version-file: vendor/nginx-lua-prometheus/integration/go.mod
+          go-version-file: openresty/vendor/nginx-lua-prometheus/integration/go.mod
       - run: go get
       - run: chmod +x test.sh && ./test.sh

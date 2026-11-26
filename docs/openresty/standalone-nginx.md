@@ -1,7 +1,7 @@
 # Running on your own nginx / OpenResty
 
 The prebuilt image is the easy path, but nothing here requires it. The metrics
-are produced by the Lua modules in [`lib/`](../lib/) plus a handful of config
+are produced by the Lua modules in [`lib/`](../../openresty/lib/) plus a handful of config
 lines — you can drop them into an **existing OpenResty**, or into **stock nginx
 compiled with `lua-nginx-module`**, and get the same `/metrics`.
 
@@ -81,10 +81,10 @@ location = /metrics { content_by_lua_block { require("http_metrics").collect() }
 set `http.nginx_conf_path` or `http.worker_connections` in `metrics_config.lua`;
 otherwise that one metric is simply not exported.
 
-The image's [`docker/conf.d/default.conf`](../docker/conf.d/default.conf) is a
+The image's [`docker/conf.d/default.conf`](../../openresty/docker/conf.d/default.conf) is a
 complete, working reference for all of this (reverse proxy + forward proxy +
 exposition). The
-[`examples/openresty-sidecar/`](../examples/openresty-sidecar/) tree is the same
+[`examples/openresty-sidecar/`](../../examples/openresty-sidecar/) tree is the same
 thing broken into `nginx.conf` / `default.conf` / `stream.conf` for a
 mounted-config deployment.
 

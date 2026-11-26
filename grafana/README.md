@@ -45,9 +45,9 @@ filter lives on the tab that uses it.
 you turn it on. That includes the Summary p95, the whole Latency percentiles
 tab and the L4 percentiles, e.g.
 `METRICS_CONFIG="http.metric_latency_hist=true;stream.metric_upstream_connect_time_hist=true"`.
-See the [metrics reference](../docs/metrics-reference.md).
+See the [metrics reference](../docs/openresty/metrics-reference.md).
 
 `/metrics` and empty routes are excluded from the route-based panels.
 
 For what each metric and label means, see the
-[metrics reference](../docs/metrics-reference.md).
+[metrics reference](../docs/openresty/metrics-reference.md).

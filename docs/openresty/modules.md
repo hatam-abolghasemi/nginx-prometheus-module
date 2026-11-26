@@ -1,11 +1,11 @@
 # Modules — maintainer's guide
 
-The observability lives in [`lib/`](../lib/): fourteen small Lua modules built on
+The observability lives in [`lib/`](../../openresty/lib/): fourteen small Lua modules built on
 the vendored `prometheus` library's public API. This page is the **maintainer's
 reference** — what each module is, why it's shaped that way, its public
 functions, the invariants you must not break, and how to change, extend, and
 test it safely. For the conceptual narrative (trust boundaries, identity
-discovery, the pipeline), read [`ARCHITECTURE.md`](../ARCHITECTURE.md); this doc
+discovery, the pipeline), read [`ARCHITECTURE.md`](architecture.md); this doc
 is the practical companion to it.
 
 ---
@@ -531,7 +531,7 @@ adding — a label with unbounded values is a Prometheus hazard; sanitize it fir
 ## Testing
 
 The pure modules are tested without nginx — they take values and return
-values. [`tests/lib_test.lua`](../tests/lib_test.lua) is plain Lua with no
+values. [`tests/lib_test.lua`](../../openresty/tests/lib_test.lua) is plain Lua with no
 framework; run it from the repo root, and CI's `Run Tests` does the same:
 
 ```bash
@@ -546,7 +546,7 @@ The modules that touch nginx (`http_metrics`, `stream_metrics`,
 `tls_intercept`, `self_identity`) are covered by the image's **smoke test**
 (`.github/workflows/openresty-image.yml`), which runs real requests through a
 real container of every flavor and asserts the expected series — see
-[the image](../ARCHITECTURE.md#the-image). When you change an orchestration
+[the image](architecture.md#the-image). When you change an orchestration
 module or the config wiring, make sure the smoke test still asserts the
 behaviour you changed.
 
@@ -558,7 +558,7 @@ The `prometheus` client under `vendor/nginx-lua-prometheus/` is **unmodified
 upstream**. To pull a fix: copy the three files (`prometheus.lua`,
 `prometheus_keys.lua`, `prometheus_resty_counter.lua`) from the upstream commit
 you want, update the **pinned commit** line in
-[`vendor/nginx-lua-prometheus/README.md`](../vendor/nginx-lua-prometheus/README.md),
+[`vendor/nginx-lua-prometheus/README.md`](../../openresty/vendor/nginx-lua-prometheus/README.md),
 and let CI's `Run Tests` (which runs upstream's own suite from `vendor/`)
 confirm the copy is intact. Never edit those files in place — keeping them
 verbatim is what makes the vendor honest and the next sync clean.

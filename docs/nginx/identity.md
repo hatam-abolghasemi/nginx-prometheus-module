@@ -13,7 +13,7 @@ Caller names come from reverse DNS of the caller's pod IP, so they need
 **Kubernetes** cluster DNS. Under plain Docker everything else works, and
 callers get the [default labels](#how-a-caller-is-named).
 
-Depends on nothing; the [sidecar](module-sidecar.md) makes it one variable.
+Depends on nothing; the [sidecar](sidecar.md) makes it one variable.
 
 ---
 
@@ -70,7 +70,7 @@ http {
 }
 ```
 
-Every directive with its default: [module.md](module.md#directives).
+Every directive with its default: [module.md](README.md#directives).
 
 ### Check it
 

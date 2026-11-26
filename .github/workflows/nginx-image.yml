@@ -23,7 +23,7 @@ on:
   push:
     branches: [main]
     paths:
-      - module/**
+      - nginx/**
       - .github/workflows/nginx-image.yml
   workflow_dispatch:
     inputs:
@@ -204,9 +204,9 @@ jobs:
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
             --build-arg NGINX_TAG="$NGINX_TAG" \
             --platform linux/amd64 \
-            -f module/docker/Dockerfile \
+            -f nginx/docker/Dockerfile \
             -t nginx-prometheus:smoke \
-            --load .
+            --load nginx
           echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test
@@ -299,9 +299,9 @@ jobs:
             --label org.opencontainers.image.revision="$GIT_SHA" \
             --label org.opencontainers.image.version="$NGINX_TAG" \
             --label org.opencontainers.image.base.name="docker.io/library/$BASE_IMAGE:$NGINX_TAG" \
-            -f module/docker/Dockerfile \
+            -f nginx/docker/Dockerfile \
             "${tag_args[@]}" \
-            --push .
+            --push nginx
 
           {
             echo "### $NGINX_TAG"
@@ -373,9 +373,9 @@ jobs:
               --build-arg BASE_IMAGE="$BASE_IMAGE" \
               --build-arg NGINX_TAG="$base" \
               --platform linux/amd64,linux/arm64 \
-              -f module/docker/Dockerfile \
+              -f nginx/docker/Dockerfile \
               --target module \
-              --output "type=local,dest=out/$libc" .
+              --output "type=local,dest=out/$libc" nginx
             for arch in amd64 arm64; do
               f="ngx_http_prometheus_module-$TAG-nginx-$VERSION-linux-$arch-$libc.so"
               cp "out/$libc/linux_$arch/ngx_http_prometheus_module.so" "$f"

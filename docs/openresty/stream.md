@@ -30,7 +30,7 @@ One `server{}` block per destination, each tagged with
 `set $destination_name "redis"`, which feeds both the `destination` label and
 the per-destination on/off switch. Logic lives in
 [`stream_metrics`](modules.md#stream_metricslua); the wiring is in the
-example's [`stream.conf`](../examples/openresty-sidecar/stream.conf).
+example's [`stream.conf`](../../examples/openresty-sidecar/stream.conf).
 
 ---
 
@@ -48,14 +48,14 @@ include and your stream config in:
 - `/etc/nginx/stream.d/stream.conf` — your destinations (next step).
 
 In Kubernetes, both come from one ConfigMap mounted at those paths — the
-[example](../examples/openresty-sidecar/) generates it from
-[`stream-enable.conf`](../examples/openresty-sidecar/stream-enable.conf) and
-[`stream.conf`](../examples/openresty-sidecar/stream.conf).
+[example](../../examples/openresty-sidecar/) generates it from
+[`stream-enable.conf`](../../examples/openresty-sidecar/stream-enable.conf) and
+[`stream.conf`](../../examples/openresty-sidecar/stream.conf).
 
 ### 2. Define a destination
 
 A minimal stream config for one Redis upstream (adapted from
-[`examples/openresty-sidecar/stream.conf`](../examples/openresty-sidecar/stream.conf)):
+[`examples/openresty-sidecar/stream.conf`](../../examples/openresty-sidecar/stream.conf)):
 
 ```nginx
 lua_shared_dict stream_metrics        3M;
@@ -105,7 +105,7 @@ Stream metrics are on their **own** endpoint — add a second scrape target:
 ```
 
 With the Operator, the example
-[`ServiceMonitor`](../examples/openresty-sidecar/service.yaml)
+[`ServiceMonitor`](../../examples/openresty-sidecar/service.yaml)
 already defines both the `metrics` (`:9145`) and `stream-metrics` (`:9254`)
 endpoints.
 

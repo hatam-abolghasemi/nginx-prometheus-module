@@ -18,10 +18,10 @@ on:
   push:
     branches: [main]
     paths:
-      - vendor/**
-      - lib/**
-      - docker/**
-      - .dockerignore
+      - openresty/lib/**
+      - openresty/vendor/**
+      - openresty/docker/**
+      - openresty/.dockerignore
       - .github/workflows/openresty-image.yml
   workflow_dispatch:
     inputs:
@@ -195,9 +195,9 @@ jobs:
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
             --build-arg OPENRESTY_TAG="$UPSTREAM_TAG-$FLAVOR" \
             --platform linux/amd64 \
-            -f docker/Dockerfile \
+            -f openresty/docker/Dockerfile \
             -t openresty-prometheus:smoke \
-            --load .
+            --load openresty
           echo "run=true" >> "$GITHUB_OUTPUT"
 
       - name: Smoke test
@@ -374,9 +374,9 @@ jobs:
             --label org.opencontainers.image.revision="$GIT_SHA" \
             --label org.opencontainers.image.version="$UPSTREAM_TAG-$FLAVOR" \
             --label org.opencontainers.image.base.name="docker.io/$BASE_IMAGE:$UPSTREAM_TAG-$FLAVOR" \
-            -f docker/Dockerfile \
+            -f openresty/docker/Dockerfile \
             "${tag_args[@]}" \
-            --push .
+            --push openresty
 
           {
             echo "### $FLAVOR"

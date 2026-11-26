@@ -46,7 +46,7 @@ app ──CONNECT api:443──▶ :3128 ──first bytes?──┬─ TLS ─�
    when they are read — TLS and HTTP clients speak first — so the decision adds
    no wait. TLS goes to `127.0.0.1:3129`, HTTP/2 to `127.0.0.1:3130`, anything
    else to the real target, as `tunnel_pass` would.
-3. `:3129` ([`optional/intercept.conf`](../docker/optional/intercept.conf) +
+3. `:3129` ([`optional/intercept.conf`](../../openresty/docker/optional/intercept.conf) +
    [`tls_intercept`](modules.md#tls_interceptlua)) terminates the TLS using a
    leaf certificate **minted on the fly for the requested SNI**, signed by a CA
    you provide. It reads the now-decrypted request and records it with the same

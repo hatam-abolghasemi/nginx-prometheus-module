@@ -2,7 +2,7 @@
 
 > This is the OpenResty sidecar's catalog. The native module exports the same
 > names with a subset of the labels, plus upstream timing; its own list is in
-> [module.md](module.md#metrics).
+> [module.md](../nginx/README.md#metrics).
 
 Every metric this exporter produces, its type, labels, and what it's for. Which
 metrics and labels are active is controlled by the `metric_*` / `label_*` flags
@@ -155,4 +155,4 @@ nginx_metric_errors_total
 ```
 
 See the [modules guide](modules.md) to add a metric or label, and the
-[architecture doc](../ARCHITECTURE.md) for why the pipeline is shaped this way.
+[architecture doc](architecture.md) for why the pipeline is shaped this way.

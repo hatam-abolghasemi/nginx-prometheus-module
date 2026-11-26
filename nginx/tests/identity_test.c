@@ -1,10 +1,10 @@
 /*
- * Unit tests for module/ngx_http_prometheus_identity.c: the PTR wire format,
+ * Unit tests for src/ngx_http_prometheus_identity.c: the PTR wire format,
  * Kubernetes PTR names, the pick among several, XFCC, /etc/hosts and client
  * subnets. No nginx needed:
  *
- *   cc -Wall -Werror -Imodule -o identity_test tests/identity_test.c \
- *       module/ngx_http_prometheus_identity.c && ./identity_test
+ *   cc -Wall -Werror -Isrc -o identity_test tests/identity_test.c \
+ *       src/ngx_http_prometheus_identity.c && ./identity_test
  */
 
 #include <stdio.h>

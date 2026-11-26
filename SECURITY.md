@@ -28,7 +28,7 @@ OpenResty itself belong to the [OpenResty project](https://openresty.org/).
   who holds that CA's private key can impersonate any host to pods that trust
   it. Keep the key in a Secret, scope trust to the pods that need it, and keep
   mTLS or pinned hosts on the skip list. See
-  [docs/https-interception.md](docs/https-interception.md).
+  [docs/https-interception.md](docs/openresty/https-interception.md).
 - **The forward proxy** listens on `127.0.0.1:3128` only. Exposing it beyond the
   pod turns it into an open proxy.
 - **The metrics port (`:9145`, `:9254`)** exposes route shapes, hostnames and

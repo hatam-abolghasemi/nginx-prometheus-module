@@ -52,7 +52,7 @@ records every request. Point it at your app's port with `APP_PORT`.
 
 Then send client traffic to the nginx container's `:80` instead of straight to
 the app. A full runnable example (Deployment + Service + ServiceMonitor) is in
-[`examples/openresty-sidecar/`](../examples/openresty-sidecar/).
+[`examples/openresty-sidecar/`](../../examples/openresty-sidecar/).
 
 **Plain Docker** — share one network namespace so `127.0.0.1:$APP_PORT` reaches
 the app:
@@ -71,7 +71,7 @@ docker run -d --name nginx --network container:app \
 ### 2. Scrape it
 
 Point Prometheus at `:9145`, path `/metrics`. With the Prometheus Operator, the
-example [`ServiceMonitor`](../examples/openresty-sidecar/service.yaml)
+example [`ServiceMonitor`](../../examples/openresty-sidecar/service.yaml)
 already wires the `metrics` port. Manually:
 
 ```yaml

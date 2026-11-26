@@ -1,16 +1,16 @@
 # Architecture & internals
 
 This is the technical breakdown of the **OpenResty sidecar** (the Lua exporter;
-the native module is described in [docs/module.md](docs/module.md)): what each
+the native module is described in [docs/module.md](../nginx/README.md)): what each
 piece does, why it exists, its requirements, how to verify it, and the
 assumptions it makes. For the product overview and quick start, see
-[`README.md`](README.md).
+[`README.md`](../../README.md).
 
 The Prometheus client library underneath — `prometheus.lua`,
 `prometheus_keys.lua`, `prometheus_resty_counter.lua`, the
 counter/gauge/histogram API — is vendored **unmodified** from
 [knyar/nginx-lua-prometheus](https://github.com/knyar/nginx-lua-prometheus)
-(MIT) under [`vendor/`](vendor/nginx-lua-prometheus/); credit for it is
+(MIT) under [`vendor/`](../../openresty/vendor/nginx-lua-prometheus/); credit for it is
 entirely upstream's. Everything below is this project's own work on top of that
 library:
 
@@ -34,8 +34,8 @@ library:
 
 The six pure modules are unit-testable without a running nginx worker (they take
 values and return values); the orchestration modules are covered by the image's
-build-time smoke test. See [docs/modules.md](docs/modules.md#testing) for how to
-test each kind, and [docs/](docs/README.md) for the step-by-step feature
+build-time smoke test. See [docs/modules.md](modules.md#testing) for how to
+test each kind, and [docs/](README.md) for the step-by-step feature
 guides: inbound, outbound, https interception (builds on outbound), stream.
 
 ## What each piece does
@@ -220,7 +220,7 @@ as its outer CONNECT.
 The CA is a trust anchor — whoever holds its key can impersonate any site to
 every pod that trusts it. The per-runtime trust setup (PHP, .NET, Node, Go,
 Java), the replace-vs-append caveat, and the security model are in
-[docs/https-interception.md](docs/https-interception.md).
+[docs/https-interception.md](https-interception.md).
 
 ### stream (TCP/UDP)
 
@@ -276,7 +276,7 @@ Pin by digest for an immutable reference; `org.opencontainers.image.revision`
 names the commit.
 
 Each build lists its tags in the run summary; the package page on GHCR lists
-every tag and digest ([docs/images.md](docs/images.md)). `retry.yml` re-runs
+every tag and digest ([docs/images.md](../images.md)). `retry.yml` re-runs
 the failed jobs of a failed image run, up to 2 times.
 
 One `docker/Dockerfile` serves every flavor. `docker/setup.sh` adapts what
@@ -310,4 +310,4 @@ docker buildx build --build-arg OPENRESTY_TAG=alpine \
   -f docker/Dockerfile -t openresty-prometheus:local .
 ```
 
-Changes are listed in [CHANGELOG.md](CHANGELOG.md).
+Changes are listed in [CHANGELOG.md](../../CHANGELOG.md).

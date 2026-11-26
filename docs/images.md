@@ -6,8 +6,8 @@ keep the tag.
 
 | Image | Rebuilt from | What's added |
 |---|---|---|
-| [`ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx`](https://github.com/hatam-abolghasemi/nginx-prometheus-module/pkgs/container/nginx-prometheus-module%2Fnginx) | [`nginx`](https://hub.docker.com/_/nginx) | the [module](module.md), metrics on `:9145/metrics` |
-| [`ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty`](https://github.com/hatam-abolghasemi/nginx-prometheus-module/pkgs/container/nginx-prometheus-module%2Fopenresty) | [`openresty/openresty`](https://hub.docker.com/r/openresty/openresty) | the OpenResty sidecar: [inbound](inbound.md), [outbound](outbound.md), [https interception](https-interception.md), [stream](stream.md) |
+| [`ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx`](https://github.com/hatam-abolghasemi/nginx-prometheus-module/pkgs/container/nginx-prometheus-module%2Fnginx) | [`nginx`](https://hub.docker.com/_/nginx) | the [module](nginx/README.md), metrics on `:9145/metrics` |
+| [`ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty`](https://github.com/hatam-abolghasemi/nginx-prometheus-module/pkgs/container/nginx-prometheus-module%2Fopenresty) | [`openresty/openresty`](https://hub.docker.com/r/openresty/openresty) | the OpenResty sidecar: [inbound](openresty/inbound.md), [outbound](openresty/outbound.md), [https interception](openresty/https-interception.md), [stream](openresty/stream.md) |
 
 The package pages list every tag and digest.
 

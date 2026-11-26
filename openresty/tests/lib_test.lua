@@ -1,7 +1,7 @@
 -- Unit tests for the pure lib/ modules, plus the HTTP label schema/value
 -- pairing. Plain Lua 5.1 / LuaJIT, no test framework, no nginx:
 --
---   luajit tests/lib_test.lua        (from the repo root)
+--   luajit tests/lib_test.lua        (from openresty/)
 
 package.path = "./lib/?.lua;./vendor/nginx-lua-prometheus/?.lua;" .. package.path
 

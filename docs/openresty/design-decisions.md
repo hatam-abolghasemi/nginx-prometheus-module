@@ -2,7 +2,7 @@
 
 The reasoning behind the [FAQ](faq.md): what this project chose, what it gave
 up, and when another tool is the better fit. Mechanics are in
-[ARCHITECTURE.md](../ARCHITECTURE.md) and [modules](modules.md).
+[ARCHITECTURE.md](architecture.md) and [modules](modules.md).
 
 ---
 

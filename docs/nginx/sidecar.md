@@ -1,12 +1,12 @@
 # sidecar — the nginx image in front of your app
 
-The [nginx image](images.md#nginx) as a sidecar: clients reach your pod on
+The [nginx image](../images.md#nginx) as a sidecar: clients reach your pod on
 `:80`, nginx forwards every request to the app on `127.0.0.1:$APP_PORT` as the
 client sent it, and every request is recorded. Nothing in the app changes.
 
 Turn on with one variable, `APP_PORT`. It's the base for
-[caller identity](module-identity.md) (one more variable, `POD_CIDR`) and
-[outbound](module-outbound.md) (on with it; the app sets `HTTP(S)_PROXY`).
+[caller identity](identity.md) (one more variable, `POD_CIDR`) and
+[outbound](outbound.md) (on with it; the app sets `HTTP(S)_PROXY`).
 
 ---
 
@@ -20,7 +20,7 @@ nginx_http_upstream_response_time_seconds{...} 0.029
 
 `mode="0"` is inbound traffic. Request duration is what the client saw;
 upstream response time is what the app took. Every metric and label:
-[module.md](module.md#metrics).
+[module.md](README.md#metrics).
 
 ---
 
@@ -47,7 +47,7 @@ upstream response time is what the app took. Every metric and label:
 
 Then point your Service's `targetPort` at `http` (`:80`) instead of the app's
 port, so client traffic goes through nginx. A full example (Deployment,
-Service, ServiceMonitor): [`examples/nginx-sidecar/`](../examples/nginx-sidecar/).
+Service, ServiceMonitor): [`examples/nginx-sidecar/`](../../examples/nginx-sidecar/).
 
 **Docker:** share the app's network namespace, so `127.0.0.1:$APP_PORT`
 reaches it.
@@ -96,8 +96,8 @@ and writes `/etc/nginx/conf.d/sidecar.conf`:
   through; nothing is added (no `X-Forwarded-*`), so the app sees `127.0.0.1`
   as its peer;
 - `prometheus_identity on`, so the pod finds its own Service name
-  ([own identity](module-identity.md#own-identity));
-- the [outbound](module-outbound.md) forward proxy on `127.0.0.1:3128`, with
+  ([own identity](identity.md#own-identity));
+- the [outbound](outbound.md) forward proxy on `127.0.0.1:3128`, with
   the pod's DNS server from `/etc/resolv.conf`.
 
 It removes `conf.d/default.conf`, which also listens on `:80`. Metrics are
@@ -110,7 +110,7 @@ metrics.
 | Variable | Default | |
 |---|---|---|
 | `APP_PORT` | — | Turns the sidecar on: the app's port |
-| `POD_CIDR` | — | [Caller identity](module-identity.md): the pod ranges, space separated, e.g. `10.233.0.0/16` |
+| `POD_CIDR` | — | [Caller identity](identity.md): the pod ranges, space separated, e.g. `10.233.0.0/16` |
 | `CLUSTER_IP_PREFIX` | — | A `Host` that is an IP starting with this (e.g. `10.233.`) is labelled `kubernetes` |
 | `OUTBOUND` | on | `off`: no forward proxy on `127.0.0.1:3128` |
 
@@ -127,5 +127,5 @@ mount an `emptyDir` there, or mount your own `sidecar.conf` and leave
 - The app must listen on `127.0.0.1` or `0.0.0.0` inside the pod.
 - `Connection: close` from the app, or a slow app, shows up in
   `nginx_http_upstream_response_time_seconds`, not as an nginx problem.
-- Only HTTP. Redis, databases and other TCP traffic are [stream](module.md#features),
+- Only HTTP. Redis, databases and other TCP traffic are [stream](README.md#features),
   coming in v2.3.

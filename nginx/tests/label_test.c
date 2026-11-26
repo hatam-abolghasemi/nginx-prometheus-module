@@ -1,9 +1,9 @@
 /*
- * Unit tests for module/ngx_http_prometheus_label.c (route sanitizer, Host
+ * Unit tests for src/ngx_http_prometheus_label.c (route sanitizer, Host
  * classifier, label escaping). No nginx needed:
  *
- *   cc -Wall -Werror -Imodule -o label_test tests/label_test.c \
- *       module/ngx_http_prometheus_label.c && ./label_test
+ *   cc -Wall -Werror -Isrc -o label_test tests/label_test.c \
+ *       src/ngx_http_prometheus_label.c && ./label_test
  */
 
 #include <stdio.h>
@@ -71,7 +71,7 @@ main(void)
 {
     ngx_prom_route_conf_t  c;
 
-    /* the same cases as tests/lib_test.lua */
+    /* the same cases as openresty/tests/lib_test.lua */
     route("numeric id", "/orders/8231", NULL, "/orders/$param");
     route("uuid", "/orders/8231/items/550e8400-e29b-41d4-a716-446655440000",
           NULL, "/orders/$param/items/$param");

@@ -13,6 +13,19 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+### 2026-11-27
+
+- **One module, two implementations, one directory each.** The C module moved
+  from `module/` and `tests/` to [`nginx/`](nginx/) (`config`, `src/`,
+  `docker/`, `tests/`); the Lua module from `lib/`, `vendor/`, `docker/` and
+  `tests/` to [`openresty/`](openresty/). Docs follow: [`docs/nginx/`](docs/nginx/README.md),
+  [`docs/openresty/`](docs/openresty/README.md), and a [`docs/README.md`](docs/README.md)
+  comparing the two; `ARCHITECTURE.md` is now `docs/openresty/architecture.md`.
+  Each image builds from its own directory, and the test workflows are
+  `nginx-tests.yml` and `openresty-tests.yml`. Nothing recorded changes.
+- **Building the C module from source** now points `--add-dynamic-module` at
+  `nginx-prometheus-module/nginx` (was `…/module`).
+
 ## v2.2.0 — 2026-11-27
 
 ### 2026-11-27
@@ -35,7 +48,7 @@ New entries go under **Unreleased** until the next tag.
   `mode="1"`, resolving names with the pod's DNS. Plain HTTP is recorded in
   full; HTTPS as a `CONNECT` tunnel through nginx's tunnel module (nginx 1.31+;
   on the stable line, plain HTTP only and the log says so). `OUTBOUND=off`
-  turns it off. Guide: [docs/module-outbound.md](docs/module-outbound.md).
+  turns it off. Guide: [docs/module-outbound.md](docs/nginx/outbound.md).
 - **A CONNECT's route is its target**, `host:port`, with the host classified
   like the `host` label (`$ip`, `kubernetes`), instead of the empty URI.
 - Tests: `tests/plug_test.sh` (load_module alone, the listener, a taken port,
@@ -58,7 +71,7 @@ New entries go under **Unreleased** until the next tag.
   content, answers are shared by all workers in the zone, re-resolved every
   `prometheus_source_refresh` (15s) and kept until a new answer replaces them.
   The module has its own small DNS client, since nginx's resolver keeps only
-  the first PTR record ([docs/module-identity.md](docs/module-identity.md)).
+  the first PTR record ([docs/module-identity.md](docs/nginx/identity.md)).
 - **Own identity**: `prometheus_identity on` finds the pod's IP in
   `/etc/hosts` and its Service by reverse DNS, retrying with backoff. Used for
   the new `app` / `namespace` labels, the `host` label (the pod's own IP shows
@@ -71,7 +84,7 @@ New entries go under **Unreleased** until the next tag.
 - **The nginx image is a sidecar with `APP_PORT`**: `:80` forwards
   transparently to `127.0.0.1:$APP_PORT`, own identity on; `POD_CIDR` adds
   caller identity, `CLUSTER_IP_PREFIX` the `kubernetes` host label. Without
-  `APP_PORT` the image is unchanged. Guide: [docs/module-sidecar.md](docs/module-sidecar.md),
+  `APP_PORT` the image is unchanged. Guide: [docs/module-sidecar.md](docs/nginx/sidecar.md),
   example: [`examples/nginx-sidecar/`](examples/nginx-sidecar/).
 - Tests: `tests/identity_test.c` (DNS wire format, PTR names, the pick, XFCC,
   `/etc/hosts`, subnets) and `tests/source_test.sh` (every naming path against
@@ -87,7 +100,7 @@ New entries go under **Unreleased** until the next tag.
   `module/`: stock nginx records every HTTP request in a shared memory zone
   and serves Prometheus metrics from a `prometheus;` location. No Lua, no
   OpenResty, no exporter process. Setup is `load_module`, `prometheus_zone`
-  and one location ([docs/module.md](docs/module.md)).
+  and one location ([docs/module.md](docs/nginx/README.md)).
 - **Same metric names as the sidecar**, so queries and the dashboard carry
   over: `nginx_http_requests_total`, the last-value gauges for duration,
   request and response size (expired by `prometheus_gauge_expiry`, 15s), their

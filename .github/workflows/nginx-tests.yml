@@ -1,22 +1,18 @@
-name: Module tests
+name: nginx tests
 
-# ngx_http_prometheus_module: the label code on its own, then the module in a
-# real nginx (newest mainline and stable), both under AddressSanitizer and
-# UBSan, and once more in a regular build. tests/module_test.sh checks the
+# The C module (nginx/): the label and identity code on their own, then the
+# module in a real nginx (newest mainline and stable), under AddressSanitizer
+# and UBSan and in a regular build. nginx/tests/module_test.sh checks the
 # exposition with promtool.
 on:
   push:
     paths:
-      - module/**
-      - tests/*.c
-      - tests/*.sh
-      - .github/workflows/module.yml
+      - nginx/**
+      - .github/workflows/nginx-tests.yml
   pull_request:
     paths:
-      - module/**
-      - tests/*.c
-      - tests/*.sh
-      - .github/workflows/module.yml
+      - nginx/**
+      - .github/workflows/nginx-tests.yml
   workflow_dispatch:
 
 permissions:
@@ -44,11 +40,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: |
-          cc -Wall -Wextra -Werror -fsanitize=address,undefined -Imodule \
-             -o label_test tests/label_test.c module/ngx_http_prometheus_label.c
+          cd nginx
+          cc -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc \
+             -o label_test tests/label_test.c src/ngx_http_prometheus_label.c
           ./label_test
-          cc -Wall -Wextra -Werror -fsanitize=address,undefined -Imodule \
-             -o identity_test tests/identity_test.c module/ngx_http_prometheus_identity.c
+          cc -Wall -Wextra -Werror -fsanitize=address,undefined -Isrc \
+             -o identity_test tests/identity_test.c src/ngx_http_prometheus_identity.c
           ./identity_test
 
   nginx:
@@ -87,7 +84,7 @@ jobs:
           fi
           ./auto/configure --prefix="$RUNNER_TEMP/out" --with-compat \
             --with-http_stub_status_module --with-http_ssl_module --with-http_v2_module \
-            --add-dynamic-module="$GITHUB_WORKSPACE/module" "${opts[@]}"
+            --add-dynamic-module="$GITHUB_WORKSPACE/nginx" "${opts[@]}"
           make -j"$(nproc)"
           make install
       - name: Test
@@ -96,9 +93,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
-          sh tests/module_test.sh "$RUNNER_TEMP/out/sbin/nginx" \
-            "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
-          for t in source plug outbound; do
-            sh "tests/${t}_test.sh" "$RUNNER_TEMP/out/sbin/nginx" \
+          for t in module source plug outbound; do
+            sh "nginx/tests/${t}_test.sh" "$RUNNER_TEMP/out/sbin/nginx" \
               "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
           done

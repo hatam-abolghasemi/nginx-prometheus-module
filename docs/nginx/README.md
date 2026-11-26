@@ -1,12 +1,15 @@
-# ngx_http_prometheus_module
+# The C module, for stock nginx
 
-A native nginx module that keeps Prometheus metrics for every HTTP request
-nginx serves and exposes them on a `prometheus;` location. Stock nginx, no
-Lua, no exporter process, no access logs to ship.
+`ngx_http_prometheus_module`, the module's C implementation under
+[`nginx/`](../../nginx/): Prometheus metrics for every HTTP request nginx
+serves, kept in shared memory and served on `:9145/metrics` by nginx itself.
+Stock nginx, nothing else to run, no access logs to ship. Where the project's
+development is focused; [the Lua module](../openresty/README.md) records the
+same metrics on OpenResty.
 
 - [Features](#features): what you can turn on, and what each one needs
 - [Install](#install): the image, a prebuilt `.so`, or a build from source
-- [Configure](#configure): three lines, then everything optional
+- [Configure](#configure): one line, then everything optional
 - [Directives](#directives)
 - [Metrics](#metrics) and [labels](#labels)
 - [How it works](#how-it-works): memory, cost, reloads
@@ -26,13 +29,13 @@ the module (stock nginx, or the nginx image)
 
 | Guide | What it gives you | Turn on with |
 |---|---|---|
-| [metrics](#configure) | Requests by method, route, status, host; latency, sizes, upstream timing, connections | `prometheus_zone` + a `prometheus;` location |
-| [sidecar](module-sidecar.md) | The image in front of your app on Kubernetes or Docker, nothing in the app changes | `APP_PORT` |
-| [caller identity](module-identity.md) | Which service and namespace called you (`source_service`, `source_namespace`), who this pod is (`app`, `namespace`), `client_subnet` | `POD_CIDR`, or the `prometheus_source_*` directives |
-| [outbound](module-outbound.md) | The calls your app makes: plain HTTP in full, HTTPS as `CONNECT host:port` (nginx 1.31+) | `HTTP(S)_PROXY=http://127.0.0.1:3128` on the app |
+| [metrics](#configure) | Requests by method, route, status, host; latency, sizes, upstream timing, connections | `load_module` |
+| [sidecar](sidecar.md) | The image in front of your app on Kubernetes or Docker, nothing in the app changes | `APP_PORT` |
+| [caller identity](identity.md) | Which service and namespace called you (`source_service`, `source_namespace`), who this pod is (`app`, `namespace`), `client_subnet` | `POD_CIDR`, or the `prometheus_source_*` directives |
+| [outbound](outbound.md) | The calls your app makes: plain HTTP in full, HTTPS as `CONNECT host:port` (nginx 1.31+) | `HTTP(S)_PROXY=http://127.0.0.1:3128` on the app |
 
 Caller identity works on any nginx, the sidecar only makes it one variable.
-What the [OpenResty sidecar](README.md) has that the module doesn't yet:
+What the [OpenResty sidecar](../openresty/README.md) has that the module doesn't yet:
 https interception and stream.
 
 ## Install
@@ -48,10 +51,10 @@ curl -s localhost:9145/metrics
 ```
 
 The image is the upstream image plus one line, `load_module` at the top of
-`/etc/nginx/nginx.conf`, and the [sidecar](module-sidecar.md) script that does
+`/etc/nginx/nginx.conf`, and the [sidecar](sidecar.md) script that does
 nothing unless `APP_PORT` is set. Your own `conf.d/*.conf`, or a whole
 `nginx.conf` of your own, works as before; if you replace `nginx.conf`, keep the
-`load_module` line. Tags: [images](images.md).
+`load_module` line. Tags: [images](../images.md).
 
 ### A prebuilt `.so`
 
@@ -81,7 +84,7 @@ curl -fsSL "https://github.com/nginx/nginx/archive/refs/tags/release-$version.ta
 git clone https://github.com/hatam-abolghasemi/nginx-prometheus-module.git
 cd "nginx-release-$version"
 ./auto/configure --with-compat --with-http_stub_status_module --with-http_ssl_module \
-    --add-dynamic-module=../nginx-prometheus-module/module
+    --add-dynamic-module=../nginx-prometheus-module/nginx
 make modules
 sudo cp objs/ngx_http_prometheus_module.so /etc/nginx/modules/
 ```
@@ -151,7 +154,7 @@ set per server or location.
 | `prometheus_route_min_len <n>;` | `4` | http | `long_with_digit`: a segment longer than this with a digit in it |
 | `prometheus_route_max_segment_len <n>;` | `64` | http | A segment longer than this is always `$param` |
 | `prometheus_cluster_ip_prefix <prefix>;` | — | http | IPv4 `Host`s starting with it are labelled `kubernetes` (e.g. `10.233.`) |
-| `prometheus_source_ptr <cidr>...;` | — | http | [Caller identity](module-identity.md): callers in these ranges are named by reverse DNS |
+| `prometheus_source_ptr <cidr>...;` | — | http | [Caller identity](identity.md): callers in these ranges are named by reverse DNS |
 | `prometheus_source_static <cidr> <service> <namespace>;` | — | http | Callers in this range get these labels; the longest range wins |
 | `prometheus_source_default <service> <namespace>;` | `public unknown` | http | Callers in no range |
 | `prometheus_source_unresolved <service> <namespace>;` | `health-probe kubernetes` | http | Kubelet probes, and PTR callers with no answer (yet) |
@@ -175,7 +178,7 @@ settings stay the same; changing any of them starts the counts over
 
 ## Metrics
 
-The same names as the [OpenResty sidecar](metrics-reference.md), so its
+The same names as the [OpenResty sidecar](../openresty/metrics-reference.md), so its
 queries and dashboard carry over.
 
 Per label set (the [labels](#labels) below):
@@ -232,9 +235,9 @@ In this order on every per-request series:
 | `status` | `200`, `499` | response status | on |
 | `client_subnet` | `10.233.4.0`, `8.8.0.0` | the first `X-Forwarded-For` address, else the peer: /24 for private ranges, /16 for public | off |
 | `host` | `api.example.com`, `localhost`, `kubernetes`, `$ip`, `checkout` | `$host`, classified: IP literals collapse so each address is not a series; this pod's own IP shows as its own Service | on |
-| `app` / `namespace` | `checkout` / `shop` | [own identity](module-identity.md#own-identity) | off |
+| `app` / `namespace` | `checkout` / `shop` | [own identity](identity.md#own-identity) | off |
 | `mode` | `0` | `prometheus_mode` | on |
-| `source_service` / `source_namespace` | `cart` / `shop` | [caller identity](module-identity.md) | off |
+| `source_service` / `source_namespace` | `cart` / `shop` | [caller identity](identity.md) | off |
 | `protocol` | `http`, `https`, `grpc`, `grpcs`, `tunnel` | the connection's TLS, gRPC by `Content-Type`, `tunnel` for CONNECT | on |
 
 Turn any of them on or off with `prometheus_label <name> on|off;`.

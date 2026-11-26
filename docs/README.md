@@ -1,84 +1,37 @@
 # Documentation
 
-**Stock nginx?** Everything about the native module (install, directives,
-metrics) is in [module.md](module.md). The rest of this index is the OpenResty
-sidecar.
+nginx-prometheus-module is one module with two implementations. They record
+the same metrics with the same names, labels and route rules, so queries work
+with either. The [dashboard](../grafana/) is built on the Lua module's labels:
+its filters need `namespace` on the connection metrics, which the C module
+doesn't add yet.
 
-Step-by-step guides for each feature, a maintainer's reference for the
-modules, and the metrics catalog. New here? Start with the
-[project README](../README.md), or run the [quickstart](../examples/quickstart/)
-to see every feature working on plain Docker in a minute; come here when you're
-ready to turn a specific feature on or understand the internals.
-
-## Features and how they depend on each other
-
-```
-the image (or your own OpenResty)
-├── inbound               on as soon as the image runs
-├── outbound              on in the image; the app opts in with HTTP(S)_PROXY
-│   └── https interception    needs outbound + INTERCEPT_TLS=on + a CA
-└── stream                off; mount a stream.conf to turn it on
-```
-
-Inbound, outbound and stream don't depend on each other — use any subset.
-**https interception is the one dependent feature**: it upgrades outbound's
-`CONNECT host:port` lines, so it does nothing unless the app's egress already
-goes through outbound.
-
-| Guide | What it gives you | Turn on with |
+| | [The C module](nginx/README.md) | [The Lua module](openresty/README.md) |
 |---|---|---|
-| [inbound](inbound.md) | Request metrics for traffic **into** your app (method, route, status, timing, caller) | Run the image |
-| [outbound](outbound.md) | Metrics for calls **out** of your app (HTTP in full, HTTPS as `CONNECT host:port`) | `HTTP(S)_PROXY` on the app |
-| [https interception](https-interception.md) | Real method/route/status **inside** outbound HTTPS (any port) and gRPC (TLS or plaintext) | outbound + `INTERCEPT_TLS=on` + a CA |
-| [stream](stream.md) | TCP/UDP metrics (Redis, DB…) from the app's point of view | A `stream.conf` |
-| [Running on your own nginx](standalone-nginx.md) | The same features on an existing OpenResty / nginx-with-`lua-nginx-module`, no image | Config only |
+| Runs on | stock nginx (any version, `--with-compat`) | OpenResty, or nginx with `lua-nginx-module` |
+| Setup | `load_module`; metrics on `:9145` | the image, or the Lua files in your OpenResty |
+| Image | [`…/nginx`](images.md#nginx), every official nginx tag | [`…/openresty`](images.md#openresty), every docker-openresty tag |
+| Inbound, sidecar | ✓ | ✓ |
+| Caller and own identity | ✓ | ✓ |
+| Outbound | ✓ (HTTPS on nginx 1.31+) | ✓ |
+| Stream (L4) | coming in v2.3 | ✓ |
+| https interception | coming in v2.4 | ✓ |
+| Status | where development is focused | maintained in parallel |
 
-## Reference
+## The C module
 
-| Doc | Contents |
-|---|---|
-| [FAQ](faq.md) | Short answers: positioning against Istio, OpenTelemetry and eBPF, architecture, labels, coverage limits, cost, operations |
-| [Design decisions](design-decisions.md) | The reasoning behind the FAQ: each choice, what it gives up, and when another tool fits better |
-| [Modules](modules.md) | Every `lib/` module: purpose, why it's shaped that way, config keys, invariants, how to change/extend/test it safely |
-| [The module](module.md) | ngx_http_prometheus_module for stock nginx: features, install, directives, metrics, labels, how it works |
-| [Module: sidecar](module-sidecar.md) | The nginx image in front of your app with `APP_PORT` |
-| [Module: caller identity](module-identity.md) | `source_service` / `source_namespace`, `app` / `namespace`, `client_subnet` |
-| [Module: outbound](module-outbound.md) | The app's egress through `127.0.0.1:3128`, recorded as `mode="1"` |
-| [Images](images.md) | The nginx and OpenResty images, their tags, pinning by digest |
-| [Metrics reference](metrics-reference.md) | Every metric and label, cardinality notes, example PromQL |
-| [Grafana dashboard](../grafana/) | Ready-to-import dashboard: summary, request breakdown, latency, payload sizes, connections, L4 streams |
-| [Architecture & internals](../ARCHITECTURE.md) | The design narrative — trust boundaries, identity discovery, cardinality strategy, the image |
+- [Overview, install, configure, directives, metrics](nginx/README.md)
+- [sidecar](nginx/sidecar.md) · [caller identity](nginx/identity.md) · [outbound](nginx/outbound.md)
 
-## How the pieces fit
+## The Lua module
 
-```
-                     ┌──────────────────── pod / host ─────────────────────┐
-   clients ──▶ :80 ──┤ inbound ──▶ your app                                │
-                     │                │                                    │
-                     │   app egress ──▶ :3128 outbound ──▶ internet        │
-                     │                       ├─▶ :3129 TLS interception    │
-                     │                       └─▶ :3130 gRPC (h2c)          │
-                     │                                                     │
-                     │   app ──▶ :16379 etc ──▶ stream ──▶ redis, db, ...  │
-                     │                                                     │
-   Prometheus ◀── :9145/metrics (http)   :9254/metrics (stream) ◀─────────┤
-                     └─────────────────────────────────────────────────────┘
-```
+- [Index and feature tree](openresty/README.md)
+- [inbound](openresty/inbound.md) · [outbound](openresty/outbound.md) · [https interception](openresty/https-interception.md) · [stream](openresty/stream.md) · [your own OpenResty](openresty/standalone-nginx.md)
+- [Metrics reference](openresty/metrics-reference.md) · [Lua modules](openresty/modules.md) · [architecture](openresty/architecture.md)
+- [FAQ](openresty/faq.md) · [design decisions](openresty/design-decisions.md)
 
-inbound, outbound and https interception share one pipeline and one
-`/metrics` (`:9145`), told apart by the `mode` label (`"0"` inbound, `"1"`
-outbound — intercepted calls are outbound too). stream is a separate registry
-on its own port (`:9254`) — nginx can't share a shared dict between the `http`
-and `stream` modules.
+## Both
 
-## Conventions used in these docs
-
-- **"the sidecar"** / **"the nginx container"** — the OpenResty container
-  running this project's config. It needn't literally be a Kubernetes sidecar;
-  it's any OpenResty in front of or beside your app.
-- **"the app"** — whatever you're observing: PHP-FPM, a Go binary, etc.
-- Ports: `:80` inbound · `:3128` outbound · `:3129` TLS interception and
-  `:3130` plaintext gRPC interception (internal) · `:9145` HTTP `/metrics` ·
-  `:9254` stream `/metrics`.
-- Config you edit lives in `lib/metrics_config.lua` (data only). Code you
-  don't normally touch is the rest of `lib/`.
+- [Images](images.md): both images, their tags, pinning
+- [Grafana dashboard](../grafana/)
+- [Changelog](../CHANGELOG.md) · [Contributing](../CONTRIBUTING.md)

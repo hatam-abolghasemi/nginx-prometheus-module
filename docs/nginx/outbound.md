@@ -5,7 +5,7 @@ which hosts it calls, how often, how fast, and what comes back. The app opts
 in by sending its egress through the sidecar's forward proxy on
 `127.0.0.1:3128`; nothing else in it changes.
 
-Needs the [sidecar](module-sidecar.md) (on by default there), or the server
+Needs the [sidecar](sidecar.md) (on by default there), or the server
 below on your own nginx. **https interception**, coming in v2.4, builds on
 this to see inside HTTPS calls.
 
@@ -28,7 +28,7 @@ nginx_http_requests_total{method="CONNECT",route="db.example.com:443",status="50
   *how long the tunnel lived* (duration) and whether it could be opened (`502`
   when the target refused or didn't answer). Method, route and status
   *inside* the tunnel are encrypted; that's what interception will add.
-- With [caller identity](module-identity.md) on, `source_service` /
+- With [caller identity](identity.md) on, `source_service` /
   `source_namespace` on outbound series are the pod itself.
 
 An IP target is shown as `$ip` (or `kubernetes` under
@@ -109,7 +109,7 @@ curl -s localhost:9145/metrics | grep 'mode="1"'
 
 - Only clients that honour the proxy variables go through it. Something that
   connects directly (many database drivers, raw sockets) is invisible here;
-  that's [stream](module.md#features), coming in v2.3.
+  that's [stream](README.md#features), coming in v2.3.
 - HTTPS is one series per destination and outcome, not per route, until
   interception.
 - A CONNECT is logged when the tunnel closes: long-lived tunnels (WebSockets,
