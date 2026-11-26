@@ -4,11 +4,35 @@ A native nginx module that keeps Prometheus metrics for every HTTP request
 nginx serves and exposes them on a `prometheus;` location. Stock nginx, no
 Lua, no exporter process, no access logs to ship.
 
+- [Features](#features): what you can turn on, and what each one needs
 - [Install](#install): the image, a prebuilt `.so`, or a build from source
 - [Configure](#configure): three lines, then everything optional
 - [Directives](#directives)
 - [Metrics](#metrics) and [labels](#labels)
 - [How it works](#how-it-works): memory, cost, reloads
+
+## Features
+
+```
+the module (stock nginx, or the nginx image)
+├── metrics              on with prometheus_zone; every request nginx serves
+├── sidecar (inbound)    image: APP_PORT; own nginx: a proxy_pass server
+│   ├── own identity     on with the sidecar; app / namespace labels
+│   └── caller identity  image: POD_CIDR; own nginx: prometheus_source_ptr
+├── outbound             coming in v2.2
+│   └── https interception   coming in v2.4; needs outbound
+└── stream (L4)          coming in v2.3
+```
+
+| Guide | What it gives you | Turn on with |
+|---|---|---|
+| [metrics](#configure) | Requests by method, route, status, host; latency, sizes, upstream timing, connections | `prometheus_zone` + a `prometheus;` location |
+| [sidecar](module-sidecar.md) | The image in front of your app on Kubernetes or Docker, nothing in the app changes | `APP_PORT` |
+| [caller identity](module-identity.md) | Which service and namespace called you (`source_service`, `source_namespace`), who this pod is (`app`, `namespace`), `client_subnet` | `POD_CIDR`, or the `prometheus_source_*` directives |
+
+Caller identity works on any nginx, the sidecar only makes it one variable.
+What the [OpenResty sidecar](README.md) has that the module doesn't yet:
+outbound, https interception, stream.
 
 ## Install
 
@@ -95,13 +119,27 @@ set per server or location.
 |---|---|---|---|
 | `prometheus_zone <size>;` | — | http | Shared memory for all workers. Required: without it nothing is recorded. 4m holds several thousand label sets with gauges; histograms take more |
 | `prometheus_metric <name> on\|off;` | see [metrics](#metrics) | http | Turns one metric on or off |
-| `prometheus_label <name> on\|off;` | all on | http | Turns one request label on or off |
+| `prometheus_label <name> on\|off;` | see [labels](#labels) | http | Turns one request label on or off |
 | `prometheus_buckets <histogram> <le>...;` | see [metrics](#metrics) | http | Histogram buckets, increasing, at most 32 |
 | `prometheus_gauge_expiry <time>;` | `15s` | http | A gauge is left out of a scrape once its label set has had no request for this long. Set it to your scrape interval |
 | `prometheus_route_rule <rule> on\|off;` | all on | http | One [route rule](#route) |
 | `prometheus_route_min_len <n>;` | `4` | http | `long_with_digit`: a segment longer than this with a digit in it |
 | `prometheus_route_max_segment_len <n>;` | `64` | http | A segment longer than this is always `$param` |
 | `prometheus_cluster_ip_prefix <prefix>;` | — | http | IPv4 `Host`s starting with it are labelled `kubernetes` (e.g. `10.233.`) |
+| `prometheus_source_ptr <cidr>...;` | — | http | [Caller identity](module-identity.md): callers in these ranges are named by reverse DNS |
+| `prometheus_source_static <cidr> <service> <namespace>;` | — | http | Callers in this range get these labels; the longest range wins |
+| `prometheus_source_default <service> <namespace>;` | `public unknown` | http | Callers in no range |
+| `prometheus_source_unresolved <service> <namespace>;` | `health-probe kubernetes` | http | Kubelet probes, and PTR callers with no answer (yet) |
+| `prometheus_source_probe <prefix>\|off;` | `kube-probe/` | http | A `User-Agent` starting with it is a kubelet probe |
+| `prometheus_source_waypoint <service>\|off;` | `waypoint` | http | A caller resolved to this service is the mesh waypoint: the real caller is read from its `X-Forwarded-Client-Cert` |
+| `prometheus_source_ignore_service <regex>...\|off;` | `-metrics$ -headless$` | http | Services passed over when an address has several PTR records |
+| `prometheus_source_refresh <time>;` | `15s` | http | How often every known caller is resolved again |
+| `prometheus_source_forget <time>;` | `300s` | http | A caller no request has come from for this long is forgotten |
+| `prometheus_identity on\|off;` | `off` | http | Discover this pod's own Service by reverse DNS: the `app` / `namespace` labels |
+| `prometheus_identity_fallback <app> <namespace>;` | `unknown` and the service account's namespace | http | `app` / `namespace` until (or unless) discovery succeeds |
+| `prometheus_dns <ip>[:port]\|auto;` | `auto` | http | The DNS server for PTR lookups; `auto` is the first IPv4 `nameserver` in `/etc/resolv.conf` |
+| `prometheus_dns_timeout <time>;` | `2s` | http | One PTR query |
+| `prometheus_cluster_domain <domain>;` | `cluster.local` | http | The cluster DNS domain in PTR names |
 | `prometheus_record on\|off;` | `on` | http, server, location | Record requests here or not |
 | `prometheus_mode <value>;` | `0` | http, server, location | The `mode` label: `0` inbound, `1` outbound |
 | `prometheus;` | — | location | Serves the metrics (GET and HEAD) |
@@ -162,14 +200,19 @@ connection requests `1 2 5 10 25 50 100 250`; connection time `0.1 0.5 1 5 15
 
 In this order on every per-request series:
 
-| Label | Example | From |
-|---|---|---|
-| `method` | `GET` | request method |
-| `route` | `/orders/$param` | the request URI, [sanitized](#route) |
-| `status` | `200`, `499` | response status |
-| `host` | `api.example.com`, `localhost`, `kubernetes`, `$ip` | `$host`, classified: IP literals collapse so each address is not a series |
-| `mode` | `0` | `prometheus_mode` |
-| `protocol` | `http`, `https`, `grpc`, `grpcs`, `tunnel` | the connection's TLS, gRPC by `Content-Type`, `tunnel` for CONNECT |
+| Label | Example | From | Default |
+|---|---|---|---|
+| `method` | `GET` | request method | on |
+| `route` | `/orders/$param` | the request URI, [sanitized](#route) | on |
+| `status` | `200`, `499` | response status | on |
+| `client_subnet` | `10.233.4.0`, `8.8.0.0` | the first `X-Forwarded-For` address, else the peer: /24 for private ranges, /16 for public | off |
+| `host` | `api.example.com`, `localhost`, `kubernetes`, `$ip`, `checkout` | `$host`, classified: IP literals collapse so each address is not a series; this pod's own IP shows as its own Service | on |
+| `app` / `namespace` | `checkout` / `shop` | [own identity](module-identity.md#own-identity) | off |
+| `mode` | `0` | `prometheus_mode` | on |
+| `source_service` / `source_namespace` | `cart` / `shop` | [caller identity](module-identity.md) | off |
+| `protocol` | `http`, `https`, `grpc`, `grpcs`, `tunnel` | the connection's TLS, gRPC by `Content-Type`, `tunnel` for CONNECT | on |
+
+Turn any of them on or off with `prometheus_label <name> on|off;`.
 
 Label values are escaped for the exposition format; control bytes and invalid
 UTF-8 become `_`.

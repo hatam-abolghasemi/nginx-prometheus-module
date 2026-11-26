@@ -27,7 +27,10 @@ nginx_http_requests_total{method="GET",route="/orders/$param",status="200",host=
 ```
 
 IDs, UUIDs and hashes collapse to `$param`, so an order id is not a time
-series. Get it as an image (every official `nginx` tag, rebuilt), a prebuilt
+series. On Kubernetes it also tells you **who called** (`source_service`,
+`source_namespace`) and runs as a sidecar in front of your app with one
+variable, `APP_PORT` ([sidecar](docs/module-sidecar.md),
+[caller identity](docs/module-identity.md)). Get it as an image (every official `nginx` tag, rebuilt), a prebuilt
 `.so` from the [releases](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases),
 or built from source in a second: **[the module](docs/module.md)**.
 

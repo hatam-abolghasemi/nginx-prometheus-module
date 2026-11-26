@@ -13,6 +13,41 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.1.0 — 2026-11-26
+
+### 2026-11-26
+
+- **Caller identity in the module**: `source_service` / `source_namespace`,
+  named the way the OpenResty sidecar names them. Kubelet probes by
+  `User-Agent`; pods in `prometheus_source_ptr` ranges by reverse DNS
+  (`<pod-ip>.<service>.<namespace>.svc.cluster.local`, one Service picked the
+  same way every time, `-metrics` / `-headless` passed over); known ranges by
+  `prometheus_source_static` (longest wins); everything else by
+  `prometheus_source_default`; the mesh waypoint's real caller from its
+  `X-Forwarded-Client-Cert`, trusted only once reverse DNS says the peer is the
+  waypoint. Lookups never wait in the request path: they start before the
+  content, answers are shared by all workers in the zone, re-resolved every
+  `prometheus_source_refresh` (15s) and kept until a new answer replaces them.
+  The module has its own small DNS client, since nginx's resolver keeps only
+  the first PTR record ([docs/module-identity.md](docs/module-identity.md)).
+- **Own identity**: `prometheus_identity on` finds the pod's IP in
+  `/etc/hosts` and its Service by reverse DNS, retrying with backoff. Used for
+  the new `app` / `namespace` labels, the `host` label (the pod's own IP shows
+  as its Service) and the outbound leg's caller.
+- **`client_subnet` label**: the first `X-Forwarded-For` address, else the peer,
+  /24 for private ranges and /16 for public.
+- All five new labels are **off by default** in the module (the sidecar's
+  `source_*` are on by default): a plain nginx shouldn't start asking DNS.
+  `prometheus_label <name> on` turns each one on.
+- **The nginx image is a sidecar with `APP_PORT`**: `:80` forwards
+  transparently to `127.0.0.1:$APP_PORT`, own identity on; `POD_CIDR` adds
+  caller identity, `CLUSTER_IP_PREFIX` the `kubernetes` host label. Without
+  `APP_PORT` the image is unchanged. Guide: [docs/module-sidecar.md](docs/module-sidecar.md),
+  example: [`examples/nginx-sidecar/`](examples/nginx-sidecar/).
+- Tests: `tests/identity_test.c` (DNS wire format, PTR names, the pick, XFCC,
+  `/etc/hosts`, subnets) and `tests/source_test.sh` (every naming path against
+  a fake DNS server, `tests/fake_dns.c`, including a refresh relabelling an IP).
+
 ## v2.0.0 — 2026-11-26
 
 ### 2026-11-26

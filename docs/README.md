@@ -40,7 +40,9 @@ goes through outbound.
 | [FAQ](faq.md) | Short answers: positioning against Istio, OpenTelemetry and eBPF, architecture, labels, coverage limits, cost, operations |
 | [Design decisions](design-decisions.md) | The reasoning behind the FAQ: each choice, what it gives up, and when another tool fits better |
 | [Modules](modules.md) | Every `lib/` module: purpose, why it's shaped that way, config keys, invariants, how to change/extend/test it safely |
-| [The module](module.md) | ngx_http_prometheus_module for stock nginx: install, directives, metrics, labels, how it works |
+| [The module](module.md) | ngx_http_prometheus_module for stock nginx: features, install, directives, metrics, labels, how it works |
+| [Module: sidecar](module-sidecar.md) | The nginx image in front of your app with `APP_PORT` |
+| [Module: caller identity](module-identity.md) | `source_service` / `source_namespace`, `app` / `namespace`, `client_subnet` |
 | [Images](images.md) | The nginx and OpenResty images, their tags, pinning by digest |
 | [Metrics reference](metrics-reference.md) | Every metric and label, cardinality notes, example PromQL |
 | [Grafana dashboard](../grafana/) | Ready-to-import dashboard: summary, request breakdown, latency, payload sizes, connections, L4 streams |
