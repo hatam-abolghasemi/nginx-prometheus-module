@@ -1,12 +1,16 @@
 #!/bin/sh
 # Integration tests for ngx_stream_prometheus_module: TCP sessions recorded
-# by destination, upstream and status, served on the http module's /metrics.
+# by destination, upstream and status, served on the http module's /metrics;
+# then the caller labels (source_service / source_namespace), resolved by the
+# http module: PTR answers from tests/fake_dns.c, callers faked with loopback
+# addresses (curl --interface / nc -s 127.0.0.x).
 #
 #   tests/stream_test.sh <nginx binary> <modules dir>
 #
 # <modules dir> holds ngx_http_prometheus_module.so and
-# ngx_stream_prometheus_module.so. Ports: 18050 (a backend), 18051 and 18052
-# (stream listeners), 19151 (metrics).
+# ngx_stream_prometheus_module.so. Ports: 18050 and 18060 (backends), 18051,
+# 18052, 18061 and 18062 (stream listeners), 19151 and 19152 (metrics),
+# 15354 (DNS).
 
 set -eu
 
@@ -14,10 +18,18 @@ NGINX=${1:?usage: $0 <nginx> <modules dir>}
 MODULES=${2:?usage: $0 <nginx> <modules dir>}
 case $NGINX in /*) ;; *) NGINX=$(pwd)/$NGINX ;; esac
 case $MODULES in /*) ;; *) MODULES=$(pwd)/$MODULES ;; esac
+HERE=$(cd "$(dirname "$0")" && pwd)
 
 PREFIX=$(mktemp -d)
-trap 'kill "$(cat "$PREFIX/nginx.pid" 2>/dev/null)" 2>/dev/null || true; [ -n "${KEEP:-}" ] || rm -rf "$PREFIX"' EXIT
-mkdir -p "$PREFIX/logs" "$PREFIX/conf"
+P2=$(mktemp -d)
+cleanup() {
+    kill "$(cat "$PREFIX/nginx.pid" 2>/dev/null)" 2>/dev/null || true
+    kill "$(cat "$P2/nginx.pid" 2>/dev/null)" 2>/dev/null || true
+    [ -n "${DNS_PID:-}" ] && kill "$DNS_PID" 2>/dev/null || true
+    [ -n "${KEEP:-}" ] || rm -rf "$PREFIX" "$P2"
+}
+trap cleanup EXIT
+mkdir -p "$PREFIX/logs" "$PREFIX/conf" "$P2/logs" "$P2/conf"
 
 fails=0
 pass() { printf 'ok    %s\n' "$1"; }
@@ -107,6 +119,122 @@ if grep -E '\[(emerg|alert|crit)\]|AddressSanitizer|runtime error' "$PREFIX/logs
     fail "error log is clean"
 else
     pass "error log is clean"
+fi
+
+# --- who opened the session: source_service / source_namespace ---
+
+cc -O1 -o "$P2/fake_dns" "$HERE/fake_dns.c"
+cat > "$P2/ptr" <<'EOT'
+127.0.0.11 127-0-0-11.checkout-metrics.shop.svc.cluster.local 127-0-0-11.checkout.shop.svc.cluster.local
+127.0.0.12 NXDOMAIN
+EOT
+"$P2/fake_dns" 15354 "$P2/ptr" &
+DNS_PID=$!
+
+conf2() {
+    cat > "$P2/conf/nginx.conf" <<EOF
+load_module $MODULES/ngx_http_prometheus_module.so;
+load_module $MODULES/ngx_stream_prometheus_module.so;
+worker_processes 2;
+pid $P2/nginx.pid;
+error_log $P2/logs/error.log notice;
+events { worker_connections 128; }
+http {
+    access_log off;
+    prometheus_listen 127.0.0.1:19152;
+    prometheus_label source_service on;
+    prometheus_label source_namespace on;
+    prometheus_identity_fallback myapp myns;
+    prometheus_source_ptr 127.0.0.8/29;
+    prometheus_source_static 127.0.1.0/24 internal zone_a;
+    prometheus_dns 127.0.0.1:15354;
+    server { listen 127.0.0.1:18060; location / { return 200 "backend\n"; } }
+}
+stream {
+    prometheus_label source_service $1;
+    prometheus_label source_namespace $1;
+    server {
+        listen 127.0.0.1:18061;
+        prometheus_destination backend;
+        proxy_pass 127.0.0.1:18060;
+    }
+    server {
+        listen 127.0.0.1:18062;
+        prometheus_destination warm;
+        proxy_pass 127.0.0.1:18060;
+    }
+}
+EOF
+}
+
+conf2 on
+"$NGINX" -p "$P2" -c conf/nginx.conf -t -q
+"$NGINX" -p "$P2" -c conf/nginx.conf
+sleep 0.5
+
+s2() { curl -s -o /dev/null --interface "$1" "http://127.0.0.1:$2/" || true; }
+
+# the first session from an address starts its lookup
+s2 127.0.0.11 18062
+s2 127.0.0.12 18062
+sleep 0.5
+
+s2 127.0.0.11 18061
+s2 127.0.0.11 18061
+s2 127.0.0.12 18061
+s2 127.0.1.5  18061
+s2 127.0.0.1  18061
+
+# open sessions, held for 2s
+sleep 2 | nc -q 1 -s 127.0.0.11 127.0.0.1 18061 > /dev/null 2>&1 &
+NC1=$!
+sleep 2 | nc -q 1 -s 127.0.0.1 127.0.0.1 18061 > /dev/null 2>&1 &
+NC2=$!
+sleep 0.5
+metrics=$(curl -s http://127.0.0.1:19152/metrics)
+
+B='destination="backend",upstream_addr="127.0.0.1:18060",status="200"'
+has "PTR caller, -metrics passed over" "nginx_stream_connections_total{$B,source_service=\"checkout\",source_namespace=\"shop\"} 2"
+has "NXDOMAIN: unresolved"          "nginx_stream_connections_total{$B,source_service=\"health-probe\",source_namespace=\"kubernetes\"} 1"
+has "static range"                  "nginx_stream_connections_total{$B,source_service=\"internal\",source_namespace=\"zone_a\"} 1"
+has "loopback: this pod"            "nginx_stream_connections_total{$B,source_service=\"myapp\",source_namespace=\"myns\"} 1"
+has "source labels on every metric" "nginx_stream_upstream_bytes_received_total{$B,source_service=\"checkout\",source_namespace=\"shop\"}"
+has "active by caller (PTR)"        'nginx_stream_connections_active{state="active",source_service="checkout",source_namespace="shop"} 1'
+has "active by caller (self)"       'nginx_stream_connections_active{state="active",source_service="myapp",source_namespace="myns"} 1'
+hasnt "no caller-less active line"  'nginx_stream_connections_active{state="active"} '
+
+if command -v promtool > /dev/null 2>&1; then
+    rc=0
+    printf '%s\n' "$metrics" | promtool check metrics || rc=$?
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ]; then pass "promtool parses it (callers)"; else fail "promtool: exit $rc"; fi
+fi
+
+wait "$NC1" "$NC2" || true
+sleep 0.5
+metrics=$(curl -s http://127.0.0.1:19152/metrics)
+has "closed: back to 0"             'nginx_stream_connections_active{state="active",source_service="checkout",source_namespace="shop"} 0'
+
+# a reload that turns the labels off while a session is open: it ends in the
+# old worker and must not drive the new, caller-less gauge below zero
+sleep 3 | nc -q 1 -s 127.0.0.11 127.0.0.1 18061 > /dev/null 2>&1 &
+NC1=$!
+sleep 0.5
+conf2 off
+"$NGINX" -p "$P2" -c conf/nginx.conf -s reload
+sleep 1
+s2 127.0.0.11 18061
+wait "$NC1" || true
+sleep 1
+metrics=$(curl -s http://127.0.0.1:19152/metrics)
+has "labels off after reload"       'nginx_stream_connections_active{state="active"} 0'
+has "plain series again"            "nginx_stream_connections_total{$B} 1"
+# (the held session itself is counted by the old worker, with its labels)
+has "the old worker's session"      "nginx_stream_connections_total{$B,source_service=\"checkout\",source_namespace=\"shop\"} 1"
+
+if grep -E '\[(emerg|alert|crit)\]|AddressSanitizer|runtime error' "$P2/logs/error.log"; then
+    fail "error log is clean (callers)"
+else
+    pass "error log is clean (callers)"
 fi
 
 echo
