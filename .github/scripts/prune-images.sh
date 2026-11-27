@@ -1,24 +1,27 @@
 #!/bin/sh
-# Lists, and with --delete removes, the deprecated images on ghcr.io:
+# Lists, and with --delete removes, everything on ghcr.io but the current
+# version of each image (one version of each, the newest: docs/images.md):
 #
 #   - the old names: nginx-prometheus-module/nginx, nginx-prometheus-module/openresty
 #     (until v2.3.0) and openresty-prometheus-exporter (v1.x), whole packages;
-#   - old flavor tags of the current images, no longer built since v2.3.1:
-#     nginx tags other than default and alpine (perl, otel, alpine-slim, ...),
-#     openresty tags other than alpine and bookworm (noble, rocky, ...);
-#   - the nginx stable line, no longer built since v2.8.0: the versions tagged
-#     stable / stable-alpine, in the image and in the module package.
+#   - in nginx, nginx-prometheus-module and openresty, every tagged version
+#     that isn't the current one: older versions, the nginx stable line, old
+#     flavors (perl, otel, noble, rocky, ...).
 #
-# A package version is deleted only if it has tags and every one of them is
-# deprecated. Untagged versions are never touched: they are the per-platform
-# manifests of the multi-arch tags that stay.
+# The current version is what the moving tags point to (nginx and the module:
+# latest, alpine, mainline, mainline-alpine; openresty: latest, alpine,
+# bookworm), in either main flavor: tags are compared without their -alpine /
+# -bookworm, so 1.29.2.1-1-alpine is current when 1.29.2.1-1-bookworm is
+# (promote moves latest and alpine onto a version of their own). Untagged versions
+# are never touched: they are the per-platform manifests of the tags that
+# stay. A package with none of the moving tags is left alone.
 #
 #   gh auth refresh -s read:packages,delete:packages
 #   sh .github/scripts/prune-images.sh             # dry run: prints what would go
 #   sh .github/scripts/prune-images.sh --delete    # deletes it
 #
 # OWNER (default hatam-abolghasemi) and OWNER_TYPE (users or orgs) select the
-# account. Needs gh and jq.
+# account. Needs gh.
 set -eu
 
 OWNER=${OWNER:-hatam-abolghasemi}
@@ -28,11 +31,20 @@ DELETE=false
 
 OLD_PACKAGES="nginx-prometheus-module/nginx nginx-prometheus-module/openresty openresty-prometheus-exporter"
 
-# tags that stay, per current image (extended regular expressions)
-KEEP_nginx='^(latest|alpine|mainline|mainline-alpine|[0-9]+\.[0-9]+(\.[0-9]+)?|[0-9]+\.[0-9]+(\.[0-9]+)?-alpine)$'
-KEEP_openresty='^(latest|alpine|bookworm|.*-alpine|.*-bookworm)$'
+# the tags that always point at the current version
+MOVING_nginx="latest alpine mainline mainline-alpine"
+MOVING_openresty="latest alpine bookworm"
 
 enc() { printf '%s' "$1" | sed 's#/#%2F#g'; }
+
+# a tag without its main-flavor suffix: 1.31.10-alpine -> 1.31.10
+stem() {
+    case $1 in
+        *-alpine)   echo "${1%-alpine}" ;;
+        *-bookworm) echo "${1%-bookworm}" ;;
+        *)          echo "$1" ;;
+    esac
+}
 
 api() { gh api "$@"; }
 
@@ -48,27 +60,55 @@ for pkg in $OLD_PACKAGES; do
     fi
 done
 
+list=$(mktemp)
+trap 'rm -f "$list"' EXIT
+
 for image in nginx nginx-prometheus-module openresty; do
-    case $image in nginx-prometheus-module) keep=$KEEP_nginx ;; *) eval "keep=\$KEEP_$image" ;; esac
-    api --paginate "/$OWNER_TYPE/$OWNER/packages/container/$image/versions?per_page=100" \
-        --jq '.[] | select((.metadata.container.tags | length) > 0)
-                  | [(.id | tostring), (.metadata.container.tags | join(","))] | @tsv' \
-    | while IFS="$(printf '\t')" read -r id tags; do
+    case $image in
+        openresty) moving=$MOVING_openresty ;;
+        *)         moving=$MOVING_nginx ;;
+    esac
+
+    # "<id> <tag>,<tag>,..." for every tagged version
+    if ! api --paginate "/$OWNER_TYPE/$OWNER/packages/container/$image/versions?per_page=100" \
+            --jq '.[] | select((.metadata.container.tags | length) > 0)
+                      | "\(.id) \(.metadata.container.tags | join(","))"' > "$list" 2> /dev/null
+    then
+        echo "package  ghcr.io/$OWNER/$image  not found; skipped"
+        continue
+    fi
+
+    # the current tags, without their flavor: those of every version holding
+    # a moving tag
+    current=","
+    while read -r id tags; do
+        for m in $moving; do
+            case ",$tags," in
+                *",$m,"*)
+                    for t in $(echo "$tags" | tr ',' ' '); do
+                        current="$current$(stem "$t"),"
+                    done
+                    break ;;
+            esac
+        done
+    done < "$list"
+
+    if [ "$current" = "," ]; then
+        echo "package  ghcr.io/$OWNER/$image  has no $moving tag; left alone"
+        continue
+    fi
+
+    while read -r id tags; do
         stays=false
-        why="old flavor"
-        if echo ",$tags," | grep -Eq ',stable(-alpine)?,'; then
-            why="stable line"
-        else
-            for t in $(echo "$tags" | tr ',' ' '); do
-                if echo "$t" | grep -Eq "$keep"; then stays=true; break; fi
-            done
-        fi
+        for t in $(echo "$tags" | tr ',' ' '); do
+            case $current in *",$(stem "$t"),"*) stays=true; break ;; esac
+        done
         $stays && continue
 
-        echo "version  ghcr.io/$OWNER/$image  $tags  ($why)"
+        echo "version  ghcr.io/$OWNER/$image  $tags"
         if $DELETE; then
             api -X DELETE "/$OWNER_TYPE/$OWNER/packages/container/$image/versions/$id"
             echo "         deleted"
         fi
-    done
+    done < "$list"
 done

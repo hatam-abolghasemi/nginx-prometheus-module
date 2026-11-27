@@ -16,8 +16,8 @@ The package pages list every tag and digest, newest Alpine first.
 **One version of each, always the newest.** nginx: the newest nginx release,
 Debian (the plain tag) and Alpine. OpenResty: the newest docker-openresty
 release, Alpine and Debian (bookworm); it can be a little behind nginx, as
-each follows its own upstream. Older exact versions stay pullable for pinning
-but aren't rebuilt.
+each follows its own upstream. Only that version is kept: older versions are
+removed from ghcr.io (see [Deprecated](#deprecated) and [Pinning](#pinning)).
 
 **They follow upstream.** Every 6 hours
 [`watch-upstream.yml`](../.github/workflows/watch-upstream.yml) looks at
@@ -114,16 +114,27 @@ after it: that one is [the module](#the-module), current.
 | `ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter` | v1.x | `ghcr.io/hatam-abolghasemi/openresty` |
 | nginx flavor tags other than default and `alpine` (`perl`, `otel`, `alpine-slim`, `trixie`, ...) | v2.3.0 | the default or `alpine` tag, or one `docker build` |
 | openresty flavor tags other than `alpine` and `bookworm` (`noble`, `rocky`, ...) | v2.3.0 | `alpine` / `bookworm`, or one `docker build` |
-| nginx `stable`, `stable-alpine` (and the module package's) | v2.7.0 | `alpine` / `latest` (the newest nginx), or a pinned version |
+| nginx `stable`, `stable-alpine` (and the module package's) | v2.7.0 | `alpine` / `latest` (the newest nginx) |
+| every older version: `1.31.9`, `1.31.9-alpine`, older OpenResty releases, ... | when a newer one came out | the current version |
 
 What will go, and deleting it (the maintainer, with `delete:packages`):
-`sh .github/scripts/prune-images.sh` lists it, `--delete` deletes it.
-Exact version tags of the main flavors stay.
+`sh .github/scripts/prune-images.sh` lists it, `--delete` deletes it. It keeps
+the current version of each image (what `latest`, `alpine`, `mainline` /
+`bookworm` point to, in both flavors) and removes every other tagged version.
 
 ## Pinning
 
 A tag is rebuilt when this repo's code changes (and nginx/OpenResty tags move
-upstream), so pin the digest for an immutable reference:
+upstream), so pin the digest for an immutable reference, for as long as that
+version is the current one. Older versions are removed, so to keep one longer,
+copy it into your own registry:
+
+```bash
+docker buildx imagetools create -t registry.example.com/nginx:1.31.10-alpine \
+  ghcr.io/hatam-abolghasemi/nginx:1.31.10-alpine
+```
+
+To see a tag's digest:
 
 ```bash
 docker buildx imagetools inspect ghcr.io/hatam-abolghasemi/nginx:1.31.10-alpine

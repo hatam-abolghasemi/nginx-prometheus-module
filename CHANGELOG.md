@@ -13,6 +13,17 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.8.1 — 2026-11-27
+
+### 2026-11-27
+
+- **Only the current version is kept on ghcr.io.** `prune-images.sh` now
+  removes every tagged version but the current one of each image (what
+  `latest`, `alpine`, `mainline` / `bookworm` point to, in both flavors):
+  older nginx and OpenResty versions, the stable line, old flavors. Pinned
+  digests last until the next version; to keep one longer, copy it to your
+  own registry ([docs/images.md](docs/images.md#pinning)).
+
 ## v2.8.0 — 2026-11-27
 
 ### 2026-11-27
