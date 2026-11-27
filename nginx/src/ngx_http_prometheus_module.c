@@ -1222,6 +1222,30 @@ ngx_prom_client_subnet_label(ngx_http_request_t *r, u_char *out)
      + (tail))
 
 
+static u_char *
+ngx_prom_grpc_status(ngx_http_request_t *r, u_char *num, u_char *p)
+{
+    ngx_uint_t                  i;
+    ngx_http_variable_value_t  *vv;
+
+    static ngx_str_t  names[] = {
+        ngx_string("upstream_trailer_grpc_status"),
+        ngx_string("upstream_http_grpc_status")
+    };
+
+    for (i = 0; i < 2; i++) {
+        vv = ngx_http_get_variable(r, &names[i],
+                                   ngx_hash_key(names[i].data, names[i].len));
+
+        if (vv && !vv->not_found && vv->len > 0 && vv->len <= 3) {
+            return ngx_sprintf(num, "grpc_%*s", (size_t) vv->len, vv->data);
+        }
+    }
+
+    return p;
+}
+
+
 static ngx_int_t
 ngx_http_prometheus_log_handler(ngx_http_request_t *r)
 {
@@ -1232,7 +1256,7 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
     ngx_msec_t                        now, ms;
     ngx_str_t                         key, *host;
     ngx_uint_t                        status;
-    ngx_flag_t                        upstream, tls;
+    ngx_flag_t                        upstream, tls, grpc;
     ngx_time_t                       *tp;
     ngx_connection_t                 *c;
     ngx_prom_sh_t                    *sh;
@@ -1253,7 +1277,7 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
 
     plcf = ngx_http_get_module_loc_conf(r, ngx_http_prometheus_module);
 
-    if (!plcf->record) {
+    if (!plcf->record || ngx_prom_intercept_skip_log(r)) {
         return NGX_OK;
     }
 
@@ -1273,9 +1297,17 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
                                     r->method_name.data, r->method_name.len);
     }
 
+    grpc = plcf->mode.len == 1 && plcf->mode.data[0] == '1'
+           && ngx_prom_is_grpc(r);
+
     if (pmcf->label[NGX_PROM_L_ROUTE]) {
         if (ngx_prom_is_connect(r)) {
             n = ngx_prom_connect_route(r, pmcf, route, sizeof(route));
+
+        } else if (grpc) {
+            /* /package.Service/Method: a finite set, kept as is */
+            n = ngx_min(r->uri.len, sizeof(route));
+            ngx_memcpy(route, r->uri.data, n);
 
         } else {
             n = ngx_prom_route_sanitize(r->unparsed_uri.data,
@@ -1289,6 +1321,12 @@ ngx_http_prometheus_log_handler(ngx_http_request_t *r)
     if (pmcf->label[NGX_PROM_L_STATUS]) {
         status = r->err_status ? r->err_status : r->headers_out.status;
         p = ngx_sprintf(num, "%03ui", status);
+
+        if (grpc && status == NGX_HTTP_OK) {
+            /* an outbound gRPC call's result is its grpc-status */
+            p = ngx_prom_grpc_status(r, num, p);
+        }
+
         len = ngx_prom_append_label(labels, len, "status", num, p - num);
     }
 

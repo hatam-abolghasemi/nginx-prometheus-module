@@ -246,4 +246,6 @@ void ngx_prom_source_self(ngx_http_prometheus_main_conf_t *pmcf,
 ngx_flag_t ngx_prom_source_own_host(ngx_http_prometheus_main_conf_t *pmcf,
     ngx_str_t *host, ngx_prom_name_t *service);
 
+ngx_uint_t ngx_prom_intercept_skip_log(ngx_http_request_t *r);
+
 #endif /* NGX_HTTP_PROMETHEUS_H */
