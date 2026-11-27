@@ -4,7 +4,8 @@ The module's Lua implementation: OpenResty Lua modules under
 [`openresty/lib/`](../../openresty/lib/), shipped as the
 [OpenResty image](../images.md#openresty) and run as a sidecar beside your app.
 It records the same metrics as [the C module](../nginx/README.md) and adds
-what that one doesn't do yet: https interception and stream.
+what that one doesn't do yet: https interception, and caller identity on
+stream sessions.
 
 Step-by-step guides for each feature, a maintainer's reference for the
 modules, and the metrics catalog. New here? Start with the

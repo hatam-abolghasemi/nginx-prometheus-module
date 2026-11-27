@@ -14,14 +14,14 @@ doesn't add yet.
 | Inbound, sidecar | ✓ | ✓ |
 | Caller and own identity | ✓ | ✓ |
 | Outbound | ✓ (HTTPS on nginx 1.31+) | ✓ |
-| Stream (L4) | coming in v2.3 | ✓ |
+| Stream (L4) | ✓ (caller identity not yet) | ✓ |
 | https interception | coming in v2.4 | ✓ |
 | Status | where development is focused | maintained in parallel |
 
 ## The C module
 
 - [Overview, install, configure, directives, metrics](nginx/README.md)
-- [sidecar](nginx/sidecar.md) · [caller identity](nginx/identity.md) · [outbound](nginx/outbound.md)
+- [sidecar](nginx/sidecar.md) · [caller identity](nginx/identity.md) · [outbound](nginx/outbound.md) · [stream](nginx/stream.md)
 
 ## The Lua module
 

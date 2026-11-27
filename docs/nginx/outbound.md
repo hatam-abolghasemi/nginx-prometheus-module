@@ -109,7 +109,7 @@ curl -s localhost:9145/metrics | grep 'mode="1"'
 
 - Only clients that honour the proxy variables go through it. Something that
   connects directly (many database drivers, raw sockets) is invisible here;
-  that's [stream](README.md#features), coming in v2.3.
+  that's [stream](stream.md).
 - HTTPS is one series per destination and outcome, not per route, until
   interception.
 - A CONNECT is logged when the tunnel closes: long-lived tunnels (WebSockets,

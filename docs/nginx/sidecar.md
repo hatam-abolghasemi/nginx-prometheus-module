@@ -113,6 +113,7 @@ metrics.
 | `POD_CIDR` | — | [Caller identity](identity.md): the pod ranges, space separated, e.g. `10.233.0.0/16` |
 | `CLUSTER_IP_PREFIX` | — | A `Host` that is an IP starting with this (e.g. `10.233.`) is labelled `kubernetes` |
 | `OUTBOUND` | on | `off`: no forward proxy on `127.0.0.1:3128` |
+| `STREAM` | — | [Stream](stream.md): `<name>:<local port>:<host>:<port>` entries, space separated |
 
 Anything else is plain nginx: mount more `.conf` files into
 `/etc/nginx/conf.d/` (they're included at the `http{}` level) to add
@@ -127,5 +128,5 @@ mount an `emptyDir` there, or mount your own `sidecar.conf` and leave
 - The app must listen on `127.0.0.1` or `0.0.0.0` inside the pod.
 - `Connection: close` from the app, or a slow app, shows up in
   `nginx_http_upstream_response_time_seconds`, not as an nginx problem.
-- Only HTTP. Redis, databases and other TCP traffic are [stream](README.md#features),
-  coming in v2.3.
+- HTTP on `:80`. Redis, databases and other TCP traffic go through
+  [stream](stream.md), with `STREAM`.

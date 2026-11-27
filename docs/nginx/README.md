@@ -24,7 +24,7 @@ the module (stock nginx, or the nginx image)
 │   ├── caller identity  image: POD_CIDR; own nginx: prometheus_source_ptr
 │   └── outbound         on with the sidecar; the app sets HTTP(S)_PROXY
 │       └── https interception   coming in v2.4; needs outbound
-└── stream (L4)          coming in v2.3
+└── stream (L4)          ngx_stream_prometheus_module.so; image: STREAM
 ```
 
 | Guide | What it gives you | Turn on with |
@@ -33,10 +33,11 @@ the module (stock nginx, or the nginx image)
 | [sidecar](sidecar.md) | The image in front of your app on Kubernetes or Docker, nothing in the app changes | `APP_PORT` |
 | [caller identity](identity.md) | Which service and namespace called you (`source_service`, `source_namespace`), who this pod is (`app`, `namespace`), `client_subnet` | `POD_CIDR`, or the `prometheus_source_*` directives |
 | [outbound](outbound.md) | The calls your app makes: plain HTTP in full, HTTPS as `CONNECT host:port` (nginx 1.31+) | `HTTP(S)_PROXY=http://127.0.0.1:3128` on the app |
+| [stream](stream.md) | TCP and UDP sessions nginx proxies (Redis, databases, brokers): count, bytes, duration, connect time, by destination | the stream `.so` and a `stream{}` server, or `STREAM` in the image |
 
 Caller identity works on any nginx, the sidecar only makes it one variable.
-What the [OpenResty sidecar](../openresty/README.md) has that the module doesn't yet:
-https interception and stream.
+What [the Lua module](../openresty/README.md) has that this one doesn't yet:
+https interception, and caller identity on stream sessions.
 
 ## Install
 
@@ -50,20 +51,26 @@ docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx-prometheus-modu
 curl -s localhost:9145/metrics
 ```
 
-The image is the upstream image plus one line, `load_module` at the top of
-`/etc/nginx/nginx.conf`, and the [sidecar](sidecar.md) script that does
-nothing unless `APP_PORT` is set. Your own `conf.d/*.conf`, or a whole
-`nginx.conf` of your own, works as before; if you replace `nginx.conf`, keep the
-`load_module` line. Tags: [images](../images.md).
+The image is the upstream image plus three lines at the top of
+`/etc/nginx/nginx.conf` (`load_module` for the http and the stream module, and
+`include /etc/nginx/main.d/*.conf;` for `stream{}` files), and the
+[sidecar](sidecar.md) script that does nothing unless `APP_PORT` is set. Your
+own `conf.d/*.conf`, or a whole `nginx.conf` of your own, works as before; if
+you replace `nginx.conf`, keep the `load_module` lines. Tags:
+[images](../images.md).
 
 ### A prebuilt `.so`
 
 Each [release](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases)
-has the module built for the newest mainline and stable nginx:
+has both modules built for the newest mainline and stable nginx:
 
 ```
 ngx_http_prometheus_module-<release>-nginx-<nginx-version>-linux-<amd64|arm64>-<glibc|musl>.so
+ngx_stream_prometheus_module-<release>-nginx-<nginx-version>-linux-<amd64|arm64>-<glibc|musl>.so
 ```
+
+The stream one is only needed for [stream](stream.md), and only loads into an
+nginx built with `--with-stream`.
 
 A dynamic module loads only into the **exact** nginx version it was built for,
 and only if that nginx was built with `--with-compat` (nginx.org packages and
@@ -71,6 +78,7 @@ the official images are). Check yours with `nginx -V`. Then:
 
 ```bash
 cp ngx_http_prometheus_module-*.so /etc/nginx/modules/ngx_http_prometheus_module.so
+cp ngx_stream_prometheus_module-*.so /etc/nginx/modules/ngx_stream_prometheus_module.so
 ```
 
 ### From source
@@ -83,10 +91,10 @@ version=$(nginx -v 2>&1 | sed 's#.*nginx/##')
 curl -fsSL "https://github.com/nginx/nginx/archive/refs/tags/release-$version.tar.gz" | tar -xz
 git clone https://github.com/hatam-abolghasemi/nginx-prometheus-module.git
 cd "nginx-release-$version"
-./auto/configure --with-compat --with-http_stub_status_module --with-http_ssl_module \
+./auto/configure --with-compat --with-stream --with-http_stub_status_module --with-http_ssl_module \
     --add-dynamic-module=../nginx-prometheus-module/nginx
 make modules
-sudo cp objs/ngx_http_prometheus_module.so /etc/nginx/modules/
+sudo cp objs/ngx_http_prometheus_module.so objs/ngx_stream_prometheus_module.so /etc/nginx/modules/
 ```
 
 The build needs the PCRE2, zlib and OpenSSL headers (`libpcre2-dev zlib1g-dev
@@ -172,6 +180,20 @@ set per server or location.
 | `prometheus_mode <value>;` | `0` | http, server, location | The `mode` label: `0` inbound, `1` outbound |
 | `prometheus;` | — | location | Serves the metrics (GET and HEAD) |
 
+In `stream{}` (the stream module, [stream](stream.md)):
+
+| Directive | Default | Context | |
+|---|---|---|---|
+| `prometheus_zone <size>\|off;` | `1m` | stream | Shared memory for stream sessions; `off`: record nothing |
+| `prometheus_metric <name> on\|off;` | see [stream metrics](#stream-metrics) | stream | Turns one stream metric on or off |
+| `prometheus_label <name> on\|off;` | all on | stream | `destination`, `upstream_addr`, `status` |
+| `prometheus_buckets <histogram> <le>...;` | see below | stream | Buckets of a stream histogram |
+| `prometheus_gauge_expiry <time>;` | `15s` | stream | As in http, for the stream gauges |
+| `prometheus_destination <name>;` | `unknown` | server | The `destination` label: what this server proxies to (`redis`, `orders-db`) |
+| `prometheus_record on\|off;` | `on` | stream, server | Record sessions here or not |
+
+Stream metrics are served by the http module on the same `/metrics`.
+
 A reload keeps every count as long as the metrics, labels, buckets and route
 settings stay the same; changing any of them starts the counts over
 (Prometheus handles the reset).
@@ -223,6 +245,27 @@ Default buckets: durations `0.01 0.025 0.05 0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8
 0.9 1 2.5 5 10`; sizes `64 256 1024 4096 16384 65536 262144 1048576`;
 connection requests `1 2 5 10 25 50 100 250`; connection time `0.1 0.5 1 5 15
 30 60 300`.
+
+### Stream metrics
+
+From `ngx_stream_prometheus_module.so`, per `destination`, `upstream_addr`
+and `status` (`200`, or `502` when the upstream couldn't be reached), the
+same names and defaults as the Lua module:
+
+| Metric | `prometheus_metric` | Type | Default |
+|---|---|---|---|
+| `nginx_stream_connections_total` | `connections` | counter | on |
+| `nginx_stream_bytes_sent_total` / `_received_total` | `bytes_sent` / `bytes_received` | counter: to / from the client | on |
+| `nginx_stream_upstream_bytes_sent_total` / `_received_total` | `upstream_bytes_sent` / `upstream_bytes_received` | counter: to / from the upstream | on |
+| `nginx_stream_session_duration_seconds` | `session_duration` | gauge, last session | on |
+| `nginx_stream_session_duration_seconds_histogram` | `session_duration_histogram` | histogram | off |
+| `nginx_stream_upstream_connect_time_seconds` | `upstream_connect_time` | gauge, last session that connected | on |
+| `nginx_stream_upstream_connect_time_seconds_histogram` | `upstream_connect_time_histogram` | histogram | off |
+| `nginx_stream_upstream_first_byte_time_seconds` | `upstream_first_byte_time_histogram` | histogram | off |
+| `nginx_stream_connections_active{state="active"}` | `connections_active` | gauge: sessions open now, all servers | on |
+
+Default buckets: session `0.001 0.005 0.01 0.05 0.1 0.5 1 5 15 30 60`;
+connect and first byte `0.001 0.005 0.01 0.05 0.1 0.5 1`.
 
 ## Labels
 
