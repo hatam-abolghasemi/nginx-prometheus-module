@@ -1,18 +1,22 @@
 /*
  * HTTPS interception for the outbound proxy: see inside a CONNECT tunnel.
  *
- *   prometheus_intercept_connect;          in the CONNECT location of :3128
+ *   prometheus_intercept_connect [tls=<addr>] [h2c=<addr>];
+ *                                          in the CONNECT location of :3128
  *   prometheus_intercept_ca <crt> <key>;   http{}: the CA leaf certs are minted from
  *   $prometheus_intercept_cert / _key      the leaf for this connection's name,
  *                                          for ssl_certificate data:$...
  *
  * prometheus_intercept_connect answers "200 Connection Established" first and
  * reads the bytes the client sends into the tunnel. Their first bytes say what
- * the tunnel carries: a TLS ClientHello goes to 127.0.0.1:3129, the HTTP/2
- * preface (plaintext gRPC) to 127.0.0.1:3130, both behind a PROXY protocol
- * line whose destination port is the CONNECT's port (and whose destination
- * address is the CONNECT's host when that is an IPv4 literal). Anything else
- * is relayed to the real target, resolved with the location's resolver.
+ * the tunnel carries: a TLS ClientHello goes to the tls= terminator
+ * (127.0.0.1:3129), the HTTP/2 preface (plaintext gRPC) to the h2c= one
+ * (127.0.0.1:3130), both behind a PROXY protocol line whose destination port
+ * is the CONNECT's port (and whose destination address is the CONNECT's host
+ * when that is an IP literal). Anything else is relayed to the real target,
+ * resolved with the location's resolver; IPv4 answers are preferred. A
+ * terminator is any address nginx can connect to: host:port, [v6]:port,
+ * unix:/path.
  * Clients speak first in TLS, HTTP/1 and HTTP/2, so the read adds no wait.
  *
  * A tunnel handed to a terminator is not recorded as a CONNECT: each request
@@ -34,8 +38,6 @@
 
 #define NGX_PROM_TUNNEL_BUF      16384
 #define NGX_PROM_MINT_CACHE      512
-#define NGX_PROM_TLS_PORT        3129
-#define NGX_PROM_H2C_PORT        3130
 
 
 typedef struct {
@@ -49,6 +51,8 @@ typedef struct {
     ngx_flag_t                 resolve;
     ngx_msec_t                 timeout;
     ngx_msec_t                 connect_timeout;
+    ngx_addr_t                *tls;         /* the terminators */
+    ngx_addr_t                *h2c;
 } ngx_prom_intercept_loc_conf_t;
 
 
@@ -62,7 +66,9 @@ typedef struct {
     ngx_uint_t                 intercepted; /* handed to a terminator */
     ngx_uint_t                 done;
     ngx_uint_t                 connected;
-    struct sockaddr_in         sin;
+    ngx_uint_t                 inet6;       /* host is an IPv6 literal */
+    ngx_sockaddr_t             sa;
+    socklen_t                  socklen;
 } ngx_prom_tunnel_t;
 
 
@@ -85,7 +91,7 @@ static void ngx_prom_intercept_exit_worker(ngx_cycle_t *cycle);
 static ngx_command_t  ngx_prom_intercept_commands[] = {
 
     { ngx_string("prometheus_intercept_connect"),
-      NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_NOARGS,
+      NGX_HTTP_LOC_CONF|NGX_HTTP_LIF_CONF|NGX_CONF_NOARGS|NGX_CONF_TAKE12,
       ngx_prom_intercept_connect,
       NGX_HTTP_LOC_CONF_OFFSET,
       0,
@@ -398,15 +404,17 @@ ngx_prom_tunnel_connected(ngx_event_t *ev)
 
 
 static void
-ngx_prom_tunnel_connect(ngx_prom_tunnel_t *t, struct sockaddr_in *sin)
+ngx_prom_tunnel_connect(ngx_prom_tunnel_t *t, struct sockaddr *sa,
+    socklen_t socklen)
 {
     ngx_int_t                       rc;
     ngx_connection_t               *pc;
     ngx_prom_intercept_loc_conf_t  *ilcf;
 
-    t->sin = *sin;
-    t->peer.sockaddr = (struct sockaddr *) &t->sin;
-    t->peer.socklen = sizeof(struct sockaddr_in);
+    ngx_memcpy(&t->sa, sa, socklen);
+    t->socklen = socklen;
+    t->peer.sockaddr = &t->sa.sockaddr;
+    t->peer.socklen = socklen;
     t->peer.name = &t->host;
     t->peer.get = ngx_event_get_peer;
     t->peer.log = t->request->connection->log;
@@ -436,46 +444,109 @@ ngx_prom_tunnel_connect(ngx_prom_tunnel_t *t, struct sockaddr_in *sin)
 }
 
 
+/* the first IPv4 answer, else the first IPv6 one */
+static ngx_resolver_addr_t *
+ngx_prom_pick_addr(ngx_resolver_ctx_t *ctx)
+{
+    ngx_uint_t  i;
+
+    if (ctx->state || ctx->naddrs == 0) {
+        return NULL;
+    }
+
+    for (i = 0; i < ctx->naddrs; i++) {
+        if (ctx->addrs[i].sockaddr->sa_family == AF_INET) {
+            return &ctx->addrs[i];
+        }
+    }
+
+#if (NGX_HAVE_INET6)
+    for (i = 0; i < ctx->naddrs; i++) {
+        if (ctx->addrs[i].sockaddr->sa_family == AF_INET6) {
+            return &ctx->addrs[i];
+        }
+    }
+#endif
+
+    return NULL;
+}
+
+
+/*
+ * An IP literal (IPv4, or IPv6 without brackets) as a sockaddr with port.
+ * Returns the length, or 0 when s is a name.
+ */
+static socklen_t
+ngx_prom_literal(u_char *s, size_t len, in_port_t port, ngx_sockaddr_t *sa)
+{
+    in_addr_t  addr;
+
+    ngx_memzero(sa, sizeof(ngx_sockaddr_t));
+
+    addr = ngx_inet_addr(s, len);
+
+    if (addr != INADDR_NONE) {
+        sa->sockaddr_in.sin_family = AF_INET;
+        sa->sockaddr_in.sin_addr.s_addr = addr;
+        sa->sockaddr_in.sin_port = htons(port);
+        return sizeof(struct sockaddr_in);
+    }
+
+#if (NGX_HAVE_INET6)
+    if (ngx_inet6_addr(s, len, sa->sockaddr_in6.sin6_addr.s6_addr) == NGX_OK) {
+        sa->sockaddr_in6.sin6_family = AF_INET6;
+        sa->sockaddr_in6.sin6_port = htons(port);
+        return sizeof(struct sockaddr_in6);
+    }
+#endif
+
+    return 0;
+}
+
+
 static void
 ngx_prom_tunnel_resolved(ngx_resolver_ctx_t *ctx)
 {
-    struct sockaddr_in  sin;
-    ngx_prom_tunnel_t  *t;
+    socklen_t             len;
+    ngx_sockaddr_t        sa;
+    ngx_prom_tunnel_t    *t;
+    ngx_resolver_addr_t  *a;
 
     t = ctx->data;
+    a = ngx_prom_pick_addr(ctx);
 
-    if (ctx->state || ctx->naddrs == 0
-        || ctx->addrs[0].sockaddr->sa_family != AF_INET)
-    {
+    if (a == NULL) {
         ngx_resolve_name_done(ctx);
         ngx_prom_tunnel_finish(t, NGX_HTTP_BAD_GATEWAY);
         return;
     }
 
-    ngx_memcpy(&sin, ctx->addrs[0].sockaddr, sizeof(struct sockaddr_in));
-    sin.sin_port = htons(t->port);
+    len = a->socklen;
+    ngx_memcpy(&sa, a->sockaddr, len);
+    ngx_inet_set_port(&sa.sockaddr, t->port);
     ngx_resolve_name_done(ctx);
 
-    ngx_prom_tunnel_connect(t, &sin);
+    ngx_prom_tunnel_connect(t, &sa.sockaddr, len);
 }
 
 
 static void
 ngx_prom_tunnel_direct(ngx_prom_tunnel_t *t)
 {
-    in_addr_t                  addr;
-    struct sockaddr_in         sin;
+    socklen_t                  len;
+    ngx_sockaddr_t             sa;
     ngx_resolver_ctx_t        *ctx, temp;
     ngx_http_core_loc_conf_t  *clcf;
 
-    addr = ngx_inet_addr(t->host.data, t->host.len);
+    len = ngx_prom_literal(t->host.data, t->host.len, t->port, &sa);
 
-    if (addr != INADDR_NONE) {
-        ngx_memzero(&sin, sizeof(sin));
-        sin.sin_family = AF_INET;
-        sin.sin_addr.s_addr = addr;
-        sin.sin_port = htons(t->port);
-        ngx_prom_tunnel_connect(t, &sin);
+    if (len) {
+        ngx_prom_tunnel_connect(t, &sa.sockaddr, len);
+        return;
+    }
+
+    if (t->inet6) {
+        ngx_prom_tunnel_finish(t, NGX_HTTP_BAD_GATEWAY);
         return;
     }
 
@@ -505,18 +576,18 @@ ngx_prom_tunnel_direct(ngx_prom_tunnel_t *t)
 
 /* the PROXY line in front of what the client sent, for a terminator */
 static ngx_int_t
-ngx_prom_tunnel_local(ngx_prom_tunnel_t *t, in_port_t lport)
+ngx_prom_tunnel_local(ngx_prom_tunnel_t *t, ngx_addr_t *to)
 {
-    u_char              line[NGX_SOCKADDR_STRLEN + 64], *p;
-    size_t              n, have;
-    in_addr_t           addr;
-    struct sockaddr_in  sin;
-    ngx_buf_t          *b;
+    u_char      line[NGX_SOCKADDR_STRLEN + 64], *p;
+    size_t      n, have;
+    ngx_buf_t  *b;
 
-    addr = ngx_inet_addr(t->host.data, t->host.len);
-
-    if (addr != INADDR_NONE) {
+    if (t->inet6) {
         /* the CONNECT's own address is the destination */
+        p = ngx_snprintf(line, sizeof(line), "PROXY TCP6 ::1 %V 1 %d\r\n",
+                         &t->host, (int) t->port);
+
+    } else if (ngx_inet_addr(t->host.data, t->host.len) != INADDR_NONE) {
         p = ngx_snprintf(line, sizeof(line), "PROXY TCP4 127.0.0.1 %V 1 %d\r\n",
                          &t->host, (int) t->port);
     } else {
@@ -538,13 +609,8 @@ ngx_prom_tunnel_local(ngx_prom_tunnel_t *t, in_port_t lport)
     b->pos = b->start;
     b->last = b->start + n + have;
 
-    ngx_memzero(&sin, sizeof(sin));
-    sin.sin_family = AF_INET;
-    sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    sin.sin_port = htons(lport);
-
     t->intercepted = 1;
-    ngx_prom_tunnel_connect(t, &sin);
+    ngx_prom_tunnel_connect(t, to->sockaddr, to->socklen);
 
     return NGX_OK;
 }
@@ -554,14 +620,16 @@ static void
 ngx_prom_tunnel_first_bytes(ngx_http_request_t *r)
 {
     ssize_t             n;
-    ngx_buf_t          *b;
-    ngx_connection_t   *c;
-    ngx_prom_tunnel_t  *t;
+    ngx_buf_t                      *b;
+    ngx_connection_t               *c;
+    ngx_prom_tunnel_t              *t;
+    ngx_prom_intercept_loc_conf_t  *ilcf;
 
     static const u_char  h2[] = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
     c = r->connection;
     t = ngx_http_get_module_ctx(r, ngx_http_prometheus_intercept_module);
+    ilcf = ngx_http_get_module_loc_conf(r, ngx_http_prometheus_intercept_module);
     b = t->up;
 
     if (c->read->timedout) {
@@ -597,14 +665,14 @@ ngx_prom_tunnel_first_bytes(ngx_http_request_t *r)
     n = b->last - b->pos;
 
     if (n >= 2 && b->pos[0] == 0x16 && b->pos[1] == 0x03) {
-        if (ngx_prom_tunnel_local(t, NGX_PROM_TLS_PORT) != NGX_OK) {
+        if (ngx_prom_tunnel_local(t, ilcf->tls) != NGX_OK) {
             ngx_prom_tunnel_finish(t, NGX_HTTP_BAD_GATEWAY);
         }
         return;
     }
 
     if (ngx_strncmp(b->pos, h2, ngx_min((size_t) n, sizeof(h2) - 1)) == 0) {
-        if (ngx_prom_tunnel_local(t, NGX_PROM_H2C_PORT) != NGX_OK) {
+        if (ngx_prom_tunnel_local(t, ilcf->h2c) != NGX_OK) {
             ngx_prom_tunnel_finish(t, NGX_HTTP_BAD_GATEWAY);
         }
         return;
@@ -661,8 +729,27 @@ ngx_prom_intercept_handler(ngx_http_request_t *r)
     t->host.data = target;
     t->host.len = colon - 1 - target;
 
+    /* [v6]:port: the address without its brackets */
     if (t->host.len > 2 && target[0] == '[') {
-        return NGX_HTTP_BAD_REQUEST;          /* IPv6 targets: not here */
+        if (target[t->host.len - 1] != ']') {
+            return NGX_HTTP_BAD_REQUEST;
+        }
+
+        t->host.data++;
+        t->host.len -= 2;
+        t->inet6 = 1;
+
+#if (NGX_HAVE_INET6)
+        {
+        u_char  a6[16];
+
+        if (ngx_inet6_addr(t->host.data, t->host.len, a6) != NGX_OK) {
+            return NGX_HTTP_BAD_REQUEST;
+        }
+        }
+#else
+        return NGX_HTTP_BAD_REQUEST;
+#endif
     }
 
     t->up = ngx_create_temp_buf(r->pool, NGX_PROM_TUNNEL_BUF);
@@ -750,7 +837,9 @@ typedef struct {
     ngx_uint_t                 resolved;
     ngx_uint_t                 failed;
     ngx_resolver_ctx_t        *pending;
-    struct sockaddr_in         sin;
+    in_port_t                  port;
+    ngx_sockaddr_t             sa;
+    socklen_t                  socklen;
     ngx_str_t                  name;
     u_char                     key[NGX_MAXHOSTNAMELEN + 8];
     size_t                     key_len;
@@ -830,8 +919,8 @@ ngx_prom_origin_get(ngx_peer_connection_t *pc, void *data)
 
     d = op->dest;
 
-    pc->sockaddr = (struct sockaddr *) &d->sin;
-    pc->socklen = sizeof(struct sockaddr_in);
+    pc->sockaddr = &d->sa.sockaddr;
+    pc->socklen = d->socklen;
     pc->name = &d->name;
     pc->cached = 0;
     pc->connection = NULL;
@@ -1068,20 +1157,18 @@ ngx_prom_intercept_origin(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 static void
 ngx_prom_dest_resolved(ngx_resolver_ctx_t *ctx)
 {
-    ngx_prom_dest_t     *d;
-    ngx_http_request_t  *r;
+    ngx_prom_dest_t      *d;
+    ngx_http_request_t   *r;
+    ngx_resolver_addr_t  *a;
 
     r = ctx->data;
     d = ngx_http_get_module_ctx(r, ngx_http_prometheus_intercept_module);
+    a = ngx_prom_pick_addr(ctx);
 
-    if (ctx->state == 0 && ctx->naddrs > 0
-        && ctx->addrs[0].sockaddr->sa_family == AF_INET)
-    {
-        in_port_t  port = d->sin.sin_port;
-
-        ngx_memcpy(&d->sin, ctx->addrs[0].sockaddr,
-                   sizeof(struct sockaddr_in));
-        d->sin.sin_port = port;
+    if (a) {
+        ngx_memcpy(&d->sa, a->sockaddr, a->socklen);
+        d->socklen = a->socklen;
+        ngx_inet_set_port(&d->sa.sockaddr, d->port);
         d->resolved = 1;
 
     } else {
@@ -1115,9 +1202,9 @@ static ngx_int_t
 ngx_prom_dest_handler(ngx_http_request_t *r)
 {
     ngx_pool_cleanup_t             *cln;
-    in_addr_t                       addr;
+    socklen_t                       len;
     ngx_int_t                       port;
-    ngx_str_t                      *host;
+    ngx_str_t                      *host, name;
     ngx_prom_dest_t                *d;
     ngx_resolver_ctx_t             *rctx, temp;
     ngx_http_core_loc_conf_t       *clcf;
@@ -1156,15 +1243,26 @@ ngx_prom_dest_handler(ngx_http_request_t *r)
 
     d->name = *host;
     d->key_len = ngx_sprintf(d->key, "%V:%d", host, (int) port) - d->key;
-    d->sin.sin_family = AF_INET;
-    d->sin.sin_port = htons((in_port_t) port);
+    d->port = (in_port_t) port;
 
-    addr = ngx_inet_addr(host->data, host->len);
+    /* an IP literal, IPv6 in brackets as Host has it */
+    name = *host;
 
-    if (addr != INADDR_NONE) {
-        d->sin.sin_addr.s_addr = addr;
+    if (name.len > 2 && name.data[0] == '[' && name.data[name.len - 1] == ']') {
+        name.data++;
+        name.len -= 2;
+    }
+
+    len = ngx_prom_literal(name.data, name.len, d->port, &d->sa);
+
+    if (len) {
+        d->socklen = len;
         d->resolved = 1;
         return NGX_DECLINED;
+    }
+
+    if (name.len != host->len) {
+        return NGX_HTTP_BAD_GATEWAY;
     }
 
     clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
@@ -1328,9 +1426,13 @@ ngx_prom_mint(ngx_str_t *name)
     X509_NAME_add_entry_by_txt(subj, "CN", MBSTRING_ASC, cn, -1, -1, 0);
     X509_set_issuer_name(x, X509_get_subject_name(ngx_prom_ca_cert));
 
-    p = ngx_inet_addr(name->data, name->len) != INADDR_NONE
+    {
+    ngx_sockaddr_t  sa;
+
+    p = ngx_prom_literal(name->data, name->len, 0, &sa)
         ? ngx_sprintf(san, "IP:%V", name) : ngx_sprintf(san, "DNS:%V", name);
     *p = '\0';
+    }
 
     X509V3_set_ctx(&v3, ngx_prom_ca_cert, x, NULL, NULL, 0);
 
@@ -1608,6 +1710,32 @@ ngx_prom_intercept_create_loc_conf(ngx_conf_t *cf)
 }
 
 
+/* a default terminator address */
+static ngx_addr_t *
+ngx_prom_intercept_addr(ngx_conf_t *cf, const char *ip, in_port_t port)
+{
+    ngx_addr_t          *a;
+    struct sockaddr_in  *sin;
+
+    a = ngx_pcalloc(cf->pool, sizeof(ngx_addr_t));
+    sin = ngx_pcalloc(cf->pool, sizeof(struct sockaddr_in));
+
+    if (a == NULL || sin == NULL) {
+        return NULL;
+    }
+
+    sin->sin_family = AF_INET;
+    sin->sin_addr.s_addr = ngx_inet_addr((u_char *) ip, ngx_strlen(ip));
+    sin->sin_port = htons(port);
+
+    a->sockaddr = (struct sockaddr *) sin;
+    a->socklen = sizeof(struct sockaddr_in);
+    ngx_str_set(&a->name, "127.0.0.1");
+
+    return a;
+}
+
+
 static char *
 ngx_prom_intercept_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
 {
@@ -1620,6 +1748,20 @@ ngx_prom_intercept_merge_loc_conf(ngx_conf_t *cf, void *parent, void *child)
     ngx_conf_merge_msec_value(conf->connect_timeout, prev->connect_timeout,
                               10000);
 
+    if (conf->tls == NULL) {
+        conf->tls = prev->tls ? prev->tls
+                              : ngx_prom_intercept_addr(cf, "127.0.0.1", 3129);
+    }
+
+    if (conf->h2c == NULL) {
+        conf->h2c = prev->h2c ? prev->h2c
+                              : ngx_prom_intercept_addr(cf, "127.0.0.1", 3130);
+    }
+
+    if (conf->tls == NULL || conf->h2c == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
     return NGX_CONF_OK;
 }
 
@@ -1628,6 +1770,10 @@ static char *
 ngx_prom_intercept_connect(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_prom_intercept_loc_conf_t  *ilcf = conf;
+    ngx_url_t                       u;
+    ngx_str_t                      *value;
+    ngx_uint_t                      i;
+    ngx_addr_t                    **to;
     ngx_http_core_loc_conf_t       *clcf;
 #if (nginx_version >= 1031000)
     ngx_http_core_srv_conf_t       *cscf;
@@ -1646,6 +1792,51 @@ ngx_prom_intercept_connect(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #endif
 
     ilcf->connect = 1;
+
+    /* tls=<addr> h2c=<addr>: where the terminators listen */
+    value = cf->args->elts;
+
+    for (i = 1; i < cf->args->nelts; i++) {
+        if (value[i].len > 4
+            && ngx_strncmp(value[i].data, "tls=", 4) == 0)
+        {
+            to = &ilcf->tls;
+
+        } else if (value[i].len > 4
+                   && ngx_strncmp(value[i].data, "h2c=", 4) == 0)
+        {
+            to = &ilcf->h2c;
+
+        } else {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "invalid parameter \"%V\": "
+                               "tls=<address> or h2c=<address>", &value[i]);
+            return NGX_CONF_ERROR;
+        }
+
+        if (*to) {
+            return "has a duplicate parameter";
+        }
+
+        ngx_memzero(&u, sizeof(ngx_url_t));
+        u.url.data = value[i].data + 4;
+        u.url.len = value[i].len - 4;
+        u.no_resolve = 1;
+
+        if (ngx_parse_url(cf->pool, &u) != NGX_OK || u.naddrs == 0) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0, "%s in \"%V\"",
+                               u.err ? u.err : "invalid address", &value[i]);
+            return NGX_CONF_ERROR;
+        }
+
+        if (u.no_port && u.family != AF_UNIX) {
+            ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                               "no port in \"%V\"", &value[i]);
+            return NGX_CONF_ERROR;
+        }
+
+        *to = &u.addrs[0];
+    }
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_prom_intercept_handler;
