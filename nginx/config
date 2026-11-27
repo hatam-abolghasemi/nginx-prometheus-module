@@ -16,7 +16,7 @@ if [ $STREAM != NO ]; then
     ngx_module_name=ngx_stream_prometheus_module
     ngx_module_incs=
     ngx_module_srcs="$ngx_addon_dir/src/ngx_stream_prometheus_module.c $ngx_addon_dir/src/ngx_http_prometheus_label.c"
-    ngx_module_deps="$ngx_addon_dir/src/ngx_prometheus_shared.h $ngx_addon_dir/src/ngx_http_prometheus_label.h"
+    ngx_module_deps="$ngx_addon_dir/src/ngx_prometheus_shared.h $ngx_addon_dir/src/ngx_http_prometheus_label.h $ngx_addon_dir/src/ngx_http_prometheus_identity.h"
 
     . auto/module
 fi

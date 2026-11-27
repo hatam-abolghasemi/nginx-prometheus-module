@@ -1007,6 +1007,41 @@ ngx_prom_in_ptr_range(ngx_prom_source_conf_t *sc, uint32_t ip)
 }
 
 
+/* the longest prometheus_source_static range with ip in it */
+static ngx_flag_t
+ngx_prom_static_find(ngx_prom_source_conf_t *sc, uint32_t ip,
+    ngx_prom_name_t *service, ngx_prom_name_t *namespace)
+{
+    ngx_uint_t                i, best;
+    ngx_prom_static_range_t  *range;
+
+    if (sc->static_ranges == NULL) {
+        return 0;
+    }
+
+    range = sc->static_ranges->elts;
+    best = sc->static_ranges->nelts;
+
+    for (i = 0; i < sc->static_ranges->nelts; i++) {
+        if ((ip & range[i].cidr.mask) == range[i].cidr.addr
+            && (best == sc->static_ranges->nelts
+                || range[i].cidr.mask > range[best].cidr.mask))
+        {
+            best = i;
+        }
+    }
+
+    if (best == sc->static_ranges->nelts) {
+        return 0;
+    }
+
+    *service = range[best].service;
+    *namespace = range[best].namespace;
+
+    return 1;
+}
+
+
 static ngx_flag_t
 ngx_prom_is_probe(ngx_http_request_t *r, ngx_prom_source_conf_t *sc)
 {
@@ -1218,12 +1253,10 @@ ngx_prom_source_caller(ngx_http_request_t *r, ngx_str_t *mode,
     ngx_prom_name_t *service, ngx_prom_name_t *namespace)
 {
     uint32_t                          ip;
-    ngx_uint_t                        i, best;
     ngx_table_elt_t                  *xfcc;
     ngx_prom_name_t                   xns, xsa;
     ngx_prom_request_ctx_t           *rctx;
     ngx_prom_source_conf_t           *sc;
-    ngx_prom_static_range_t          *range;
     ngx_http_prometheus_main_conf_t  *pmcf;
 
     pmcf = ngx_http_get_module_main_conf(r, ngx_http_prometheus_module);
@@ -1251,27 +1284,7 @@ ngx_prom_source_caller(ngx_http_request_t *r, ngx_str_t *mode,
     /* the PTR ranges first, as in the sidecar: a pod CIDR is never static */
 
     if (!ngx_prom_in_ptr_range(sc, ip)) {
-        if (sc->static_ranges == NULL) {
-            return;
-        }
-
-        range = sc->static_ranges->elts;
-        best = sc->static_ranges->nelts;
-
-        for (i = 0; i < sc->static_ranges->nelts; i++) {
-            if ((ip & range[i].cidr.mask) == range[i].cidr.addr
-                && (best == sc->static_ranges->nelts
-                    || range[i].cidr.mask > range[best].cidr.mask))
-            {
-                best = i;
-            }
-        }
-
-        if (best < sc->static_ranges->nelts) {
-            *service = range[best].service;
-            *namespace = range[best].namespace;
-        }
-
+        (void) ngx_prom_static_find(sc, ip, service, namespace);
         return;
     }
 
@@ -1305,5 +1318,69 @@ ngx_prom_source_caller(ngx_http_request_t *r, ngx_str_t *mode,
             *service = xsa;
             *namespace = xns;
         }
+    }
+}
+
+
+/*
+ * The caller of a stream session, for ngx_stream_prometheus_module through
+ * the zone's ngx_prom_identity_t: the same ranges, cache and DNS client as
+ * HTTP, with no User-Agent or XFCC to look at. A configured range comes
+ * first; then a loopback or unix-socket client is one of this pod's own
+ * containers (in the sidecar, the app), so it is this pod's own identity.
+ */
+void
+ngx_prom_source_stream(void *data, struct sockaddr *sa,
+    ngx_prom_name_t *service, ngx_prom_name_t *namespace)
+{
+    ngx_http_prometheus_main_conf_t *pmcf = data;
+
+    uint32_t                 ip;
+    ngx_prom_source_conf_t  *sc;
+
+    sc = &pmcf->source;
+
+    *service = sc->default_service;
+    *namespace = sc->default_namespace;
+
+    switch (sa->sa_family) {
+
+    case AF_INET:
+        ip = ntohl(((struct sockaddr_in *) sa)->sin_addr.s_addr);
+
+        if (ngx_prom_in_ptr_range(sc, ip)) {
+            if (!ngx_prom_caller_get(pmcf, ip, service, namespace)) {
+                *service = sc->unresolved_service;
+                *namespace = sc->unresolved_namespace;
+            }
+            return;
+        }
+
+        if (ngx_prom_static_find(sc, ip, service, namespace)) {
+            return;
+        }
+
+        if ((ip >> 24) == 127) {
+            ngx_prom_source_self(pmcf, service, namespace);
+        }
+
+        return;
+
+#if (NGX_HAVE_INET6)
+    case AF_INET6:
+        if (IN6_IS_ADDR_LOOPBACK(&((struct sockaddr_in6 *) sa)->sin6_addr)) {
+            ngx_prom_source_self(pmcf, service, namespace);
+        }
+        return;
+#endif
+
+#if (NGX_HAVE_UNIX_DOMAIN)
+    case AF_UNIX:
+        ngx_prom_source_self(pmcf, service, namespace);
+        return;
+#endif
+
+    default:
+        return;
     }
 }

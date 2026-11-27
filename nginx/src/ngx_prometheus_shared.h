@@ -7,7 +7,8 @@
  * ngx_stream_prometheus_module.so), so an nginx without stream can load the
  * http one. They never call each other: the http module finds the stream
  * zone by name in the cycle's shared memory, and the zone carries a pointer
- * to the stream configuration it needs to render it.
+ * to the stream configuration it needs to render it. The other way round,
+ * the stream module finds the http zone by name to ask who a caller is.
  */
 
 #ifndef NGX_PROMETHEUS_SHARED_H
@@ -15,6 +16,8 @@
 
 #include <ngx_config.h>
 #include <ngx_core.h>
+
+#include "ngx_http_prometheus_identity.h"
 
 
 #define NGX_PROM_MAX_BUCKETS       32
@@ -73,6 +76,8 @@ enum {
     NGX_PROM_SL_DESTINATION = 0,
     NGX_PROM_SL_UPSTREAM_ADDR,
     NGX_PROM_SL_STATUS,
+    NGX_PROM_SL_SOURCE_SERVICE,
+    NGX_PROM_SL_SOURCE_NAMESPACE,
     NGX_PROM_SL_COUNT
 };
 
@@ -153,6 +158,18 @@ typedef struct {
 } ngx_prom_stream_series_t;
 
 
+/*
+ * Sessions open now from one caller, when the source labels are on: the key
+ * is the rendered source_service / source_namespace labels.
+ */
+typedef struct {
+    ngx_str_node_t     sn;
+    ngx_queue_t        queue;
+    int64_t            count;
+    u_char             data[1];
+} ngx_prom_stream_active_t;
+
+
 typedef struct {
     ngx_rbtree_t       rbtree;
     ngx_rbtree_node_t  sentinel;
@@ -162,6 +179,13 @@ typedef struct {
     uint32_t           layout;
     uint64_t           errors;
     ngx_atomic_t       active;          /* sessions open now */
+
+    /* sessions open now, by caller (source labels on) */
+    ngx_rbtree_t       active_rbtree;
+    ngx_rbtree_node_t  active_sentinel;
+    ngx_queue_t        active_queue;
+    size_t             active_bytes;
+    ngx_uint_t         generation;      /* bumped when the series are reset */
 } ngx_prom_stream_sh_t;
 
 
@@ -171,6 +195,33 @@ typedef struct {
     ngx_slab_pool_t         *shpool;
     ngx_prom_stream_conf_t  *conf;
 } ngx_prom_stream_ctx_t;
+
+
+#define ngx_prom_stream_active_size(len)                                      \
+    (offsetof(ngx_prom_stream_active_t, data) + (len))
+
+
+/*
+ * Caller identity, which only the http module has (its PTR cache and DNS
+ * client): the first member of the http zone's ctx, so the stream module can
+ * find it by the zone's name (NGX_PROM_HTTP_ZONE_NAME) and ask through it.
+ *
+ * source() fills the caller of a connection from sockaddr: a configured
+ * static or PTR range, then loopback as this pod's own identity, then the
+ * default. A PTR caller with no answer yet gets the unresolved labels, and
+ * a lookup is started.
+ */
+#define NGX_PROM_IDENTITY_MAGIC    0x70726964      /* "prid" */
+#define NGX_PROM_HTTP_ZONE_NAME    "prometheus"
+
+typedef void (*ngx_prom_source_pt)(void *data, struct sockaddr *sa,
+    ngx_prom_name_t *service, ngx_prom_name_t *namespace);
+
+typedef struct {
+    uint32_t             magic;
+    void                *data;
+    ngx_prom_source_pt   source;
+} ngx_prom_identity_t;
 
 
 #define ngx_prom_stream_size(len, tail)                                       \

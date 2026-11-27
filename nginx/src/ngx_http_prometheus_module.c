@@ -617,6 +617,10 @@ ngx_http_prometheus_add_zone(ngx_conf_t *cf,
         return NGX_ERROR;
     }
 
+    ctx->identity.magic = NGX_PROM_IDENTITY_MAGIC;
+    ctx->identity.data = pmcf;
+    ctx->identity.source = ngx_prom_source_stream;
+
     ngx_str_set(&name, NGX_PROM_ZONE_NAME);
 
     pmcf->zone = ngx_shared_memory_add(cf, &name, size,
@@ -1719,9 +1723,11 @@ static uint64_t
 ngx_prom_render_stream(ngx_prom_writer_t *w, ngx_pool_t *pool,
     ngx_msec_t now)
 {
-    size_t                     bytes, size, off, len;
-    u_char                    *snap, *labels, *tail;
+    size_t                     bytes, abytes, aoff, size, off, len;
+    u_char                    *snap, *asnap, *labels, *tail;
     uint64_t                   errors;
+    ngx_flag_t                 source;
+    ngx_prom_stream_active_t  *a;
     ngx_int_t                  c, g, h;
     ngx_uint_t                 i, m;
     ngx_atomic_uint_t          active;
@@ -1764,11 +1770,28 @@ ngx_prom_render_stream(ngx_prom_writer_t *w, ngx_pool_t *pool,
 
     sc = ctx->conf;
 
+    source = sc->label[NGX_PROM_SL_SOURCE_SERVICE]
+             || sc->label[NGX_PROM_SL_SOURCE_NAMESPACE];
+
     ngx_shmtx_lock(&ctx->shpool->mutex);
     bytes = ctx->sh->bytes;
+    abytes = source ? ctx->sh->active_bytes : 0;
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 
     bytes += bytes / 8 + 16 * ngx_prom_stream_size(256, sc->tail);
+    abytes += abytes / 8 + 16 * ngx_prom_stream_active_size(256);
+
+    asnap = NULL;
+
+    if (source) {
+        asnap = ngx_palloc(pool, abytes + sizeof(uint64_t));
+        if (asnap == NULL) {
+            w->error = 1;
+            return 0;
+        }
+
+        asnap = ngx_align_ptr(asnap, sizeof(uint64_t));
+    }
 
     snap = ngx_palloc(pool, bytes + sizeof(uint64_t));
     if (snap == NULL) {
@@ -1801,6 +1824,30 @@ ngx_prom_render_stream(ngx_prom_writer_t *w, ngx_pool_t *pool,
     errors = sh->errors;
     active = sh->active;
 
+    /* per caller: the count, then the label text, each record aligned */
+    aoff = 0;
+
+    if (source) {
+        for (q = ngx_queue_head(&sh->active_queue);
+             q != ngx_queue_sentinel(&sh->active_queue);
+             q = ngx_queue_next(q))
+        {
+            a = ngx_queue_data(q, ngx_prom_stream_active_t, queue);
+            size = ngx_align(sizeof(int64_t) + sizeof(size_t) + a->sn.str.len,
+                             sizeof(uint64_t));
+
+            if (aoff + size > abytes) {
+                break;
+            }
+
+            *(int64_t *) (asnap + aoff) = a->count;
+            *(size_t *) (asnap + aoff + sizeof(int64_t)) = a->sn.str.len;
+            ngx_memcpy(asnap + aoff + sizeof(int64_t) + sizeof(size_t),
+                       a->sn.str.data, a->sn.str.len);
+            aoff += size;
+        }
+    }
+
     ngx_shmtx_unlock(&ctx->shpool->mutex);
 
     bytes = off;
@@ -1814,9 +1861,29 @@ ngx_prom_render_stream(ngx_prom_writer_t *w, ngx_pool_t *pool,
         md = &ngx_prom_stream_metrics[m];
 
         if (m == NGX_PROM_S_ACTIVE) {
+            if (!source) {
+                ngx_prom_header_raw(w, md->metric, md->help, md->type);
+                ngx_prom_line(w, md->metric, "", NULL, 0,
+                              "state=\"active\"", (double) active);
+                continue;
+            }
+
+            /* by caller, as the Lua module: nothing until a first session */
+            if (aoff == 0) {
+                continue;
+            }
+
             ngx_prom_header_raw(w, md->metric, md->help, md->type);
-            ngx_prom_line(w, md->metric, "", NULL, 0, "state=\"active\"",
-                          (double) active);
+
+            for (off = 0; off < aoff; off += size) {
+                len = *(size_t *) (asnap + off + sizeof(int64_t));
+                size = ngx_align(sizeof(int64_t) + sizeof(size_t) + len,
+                                 sizeof(uint64_t));
+                ngx_prom_line(w, md->metric, "",
+                              asnap + off + sizeof(int64_t) + sizeof(size_t),
+                              len, NULL, (double) *(int64_t *) (asnap + off));
+            }
+
             continue;
         }
 

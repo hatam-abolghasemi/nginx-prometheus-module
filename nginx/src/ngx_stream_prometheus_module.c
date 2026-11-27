@@ -20,9 +20,13 @@
  * port of its own: the http module finds the zone and serves it on the same
  * /metrics, so one scrape covers both.
  *
- * Labels: destination (prometheus_destination), upstream_addr, status. The
- * last-value gauges are left out of a scrape once their label set has had
- * no session for prometheus_gauge_expiry; histograms are opt-in.
+ * Labels: destination (prometheus_destination), upstream_addr, status, and
+ * (off by default) source_service / source_namespace: who opened the
+ * session, worked out by the http module (its ranges, PTR cache and DNS
+ * client), which this module finds by its zone's name. With the source
+ * labels on, connections_active is kept per caller. The last-value gauges
+ * are left out of a scrape once their label set has had no session for
+ * prometheus_gauge_expiry; histograms are opt-in.
  */
 
 #include <ngx_config.h>
@@ -39,6 +43,8 @@
 typedef struct {
     ngx_shm_zone_t          *zone;
     ngx_flag_t               zone_off;
+    ngx_flag_t               source;     /* a source_* label is on */
+    ngx_prom_identity_t     *identity;   /* the http module's, if loaded */
     ngx_prom_stream_conf_t   conf;
 } ngx_stream_prometheus_main_conf_t;
 
@@ -50,6 +56,8 @@ typedef struct {
 
 
 typedef struct {
+    ngx_str_t                active;     /* the per-caller series counted */
+    ngx_uint_t               generation; /* of the zone it was counted in */
     unsigned                 counted:1;
 } ngx_stream_prometheus_ctx_t;
 
@@ -59,7 +67,13 @@ static ngx_prom_stream_metric_t  ngx_prom_stream_metrics[NGX_PROM_S_COUNT]
 
 
 static const char  *ngx_prom_stream_label_names[NGX_PROM_SL_COUNT] = {
-    "destination", "upstream_addr", "status"
+    "destination", "upstream_addr", "status", "source_service",
+    "source_namespace"
+};
+
+/* the Lua module's defaults: the source labels are opt-in */
+static ngx_flag_t  ngx_prom_stream_label_on[NGX_PROM_SL_COUNT] = {
+    1, 1, 1, 0, 0
 };
 
 static const char  *ngx_prom_stream_hist_names[NGX_PROM_SH_COUNT] = {
@@ -75,6 +89,7 @@ static double  ngx_prom_stream_buckets_connect[] =
 
 
 static ngx_int_t ngx_stream_prometheus_init(ngx_conf_t *cf);
+static ngx_int_t ngx_stream_prometheus_init_module(ngx_cycle_t *cycle);
 static void *ngx_stream_prometheus_create_main_conf(ngx_conf_t *cf);
 static char *ngx_stream_prometheus_init_main_conf(ngx_conf_t *cf, void *conf);
 static void *ngx_stream_prometheus_create_srv_conf(ngx_conf_t *cf);
@@ -165,7 +180,7 @@ ngx_module_t  ngx_stream_prometheus_module = {
     ngx_stream_prometheus_commands,          /* module directives */
     NGX_STREAM_MODULE,                       /* module type */
     NULL,                                    /* init master */
-    NULL,                                    /* init module */
+    ngx_stream_prometheus_init_module,       /* init module */
     NULL,                                    /* init process */
     NULL,                                    /* init thread */
     NULL,                                    /* exit thread */
@@ -254,8 +269,11 @@ ngx_stream_prometheus_init_main_conf(ngx_conf_t *cf, void *conf)
     }
 
     for (i = 0; i < NGX_PROM_SL_COUNT; i++) {
-        ngx_conf_init_value(sc->label[i], 1);
+        ngx_conf_init_value(sc->label[i], ngx_prom_stream_label_on[i]);
     }
+
+    pmcf->source = sc->label[NGX_PROM_SL_SOURCE_SERVICE]
+                   || sc->label[NGX_PROM_SL_SOURCE_NAMESPACE];
 
     for (i = 0; i < NGX_PROM_SH_COUNT; i++) {
         double      *v = (i == NGX_PROM_SH_SESSION)
@@ -522,6 +540,7 @@ ngx_stream_prometheus_init_zone(ngx_shm_zone_t *shm_zone, void *data)
 
     ngx_queue_t               *q;
     ngx_prom_stream_ctx_t     *ctx;
+    ngx_prom_stream_active_t  *a;
     ngx_prom_stream_series_t  *s;
 
     ctx = shm_zone->data;
@@ -545,8 +564,18 @@ ngx_stream_prometheus_init_zone(ngx_shm_zone_t *shm_zone, void *data)
             ngx_slab_free_locked(ctx->shpool, s);
         }
 
+        while (!ngx_queue_empty(&ctx->sh->active_queue)) {
+            q = ngx_queue_head(&ctx->sh->active_queue);
+            a = ngx_queue_data(q, ngx_prom_stream_active_t, queue);
+            ngx_queue_remove(q);
+            ngx_rbtree_delete(&ctx->sh->active_rbtree, &a->sn.node);
+            ngx_slab_free_locked(ctx->shpool, a);
+        }
+
         ctx->sh->nseries = 0;
         ctx->sh->bytes = 0;
+        ctx->sh->active_bytes = 0;
+        ctx->sh->generation++;
         ctx->sh->layout = ctx->conf->layout;
 
         ngx_shmtx_unlock(&ctx->shpool->mutex);
@@ -572,6 +601,10 @@ ngx_stream_prometheus_init_zone(ngx_shm_zone_t *shm_zone, void *data)
     ngx_rbtree_init(&ctx->sh->rbtree, &ctx->sh->sentinel,
                     ngx_str_rbtree_insert_value);
     ngx_queue_init(&ctx->sh->queue);
+
+    ngx_rbtree_init(&ctx->sh->active_rbtree, &ctx->sh->active_sentinel,
+                    ngx_str_rbtree_insert_value);
+    ngx_queue_init(&ctx->sh->active_queue);
 
     ctx->shpool->log_nomem = 0;
 
@@ -629,13 +662,100 @@ ngx_prom_stream_label(u_char *buf, size_t o, const char *name,
 }
 
 
+/*
+ * The source labels of a session, as text ("source_service=..." and/or
+ * "source_namespace=..."), appended at o. Without the http module every
+ * caller is "unknown".
+ */
+static size_t
+ngx_prom_stream_source(ngx_stream_session_t *s,
+    ngx_stream_prometheus_main_conf_t *pmcf, u_char *buf, size_t o)
+{
+    ngx_prom_name_t  svc, ns;
+
+    if (pmcf->identity) {
+        pmcf->identity->source(pmcf->identity->data, s->connection->sockaddr,
+                               &svc, &ns);
+
+    } else {
+        svc.len = sizeof("unknown") - 1;
+        ngx_memcpy(svc.data, "unknown", svc.len);
+        ns = svc;
+    }
+
+    if (pmcf->conf.label[NGX_PROM_SL_SOURCE_SERVICE]) {
+        o = ngx_prom_stream_label(buf, o, "source_service", svc.data,
+                                  svc.len);
+    }
+
+    if (pmcf->conf.label[NGX_PROM_SL_SOURCE_NAMESPACE]) {
+        o = ngx_prom_stream_label(buf, o, "source_namespace", ns.data,
+                                  ns.len);
+    }
+
+    return o;
+}
+
+
+/* +1 or -1 on the per-caller active series; called with the zone locked */
+static ngx_int_t
+ngx_prom_stream_active_add(ngx_prom_stream_ctx_t *ctx, ngx_str_t *key,
+    int64_t n)
+{
+    size_t                     size;
+    uint32_t                   hash;
+    ngx_prom_stream_sh_t      *sh;
+    ngx_prom_stream_active_t  *a;
+
+    sh = ctx->sh;
+    hash = ngx_crc32_short(key->data, key->len);
+
+    a = (ngx_prom_stream_active_t *)
+            ngx_str_rbtree_lookup(&sh->active_rbtree, key, hash);
+
+    if (a == NULL) {
+        if (n < 0) {
+            return NGX_DECLINED;
+        }
+
+        size = ngx_prom_stream_active_size(key->len);
+
+        a = ngx_slab_calloc_locked(ctx->shpool, size);
+        if (a == NULL) {
+            sh->errors++;
+            return NGX_ERROR;
+        }
+
+        ngx_memcpy(a->data, key->data, key->len);
+        a->sn.str.data = a->data;
+        a->sn.str.len = key->len;
+        a->sn.node.key = hash;
+
+        ngx_rbtree_insert(&sh->active_rbtree, &a->sn.node);
+        ngx_queue_insert_tail(&sh->active_queue, &a->queue);
+        sh->active_bytes += size;
+    }
+
+    if (n < 0 && a->count <= 0) {
+        return NGX_DECLINED;
+    }
+
+    a->count += n;
+
+    return NGX_OK;
+}
+
+
 static ngx_int_t
 ngx_stream_prometheus_preaccess(ngx_stream_session_t *s)
 {
+    size_t                              len;
+    ngx_str_t                           key;
     ngx_prom_stream_ctx_t              *ctx;
     ngx_stream_prometheus_ctx_t        *pctx;
     ngx_stream_prometheus_srv_conf_t   *pscf;
     ngx_stream_prometheus_main_conf_t  *pmcf;
+    u_char                              labels[NGX_PROM_STREAM_LABELS_MAX];
 
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_prometheus_module);
     pmcf = ngx_stream_get_module_main_conf(s, ngx_stream_prometheus_module);
@@ -655,10 +775,42 @@ ngx_stream_prometheus_preaccess(ngx_stream_session_t *s)
 
     ngx_stream_set_ctx(s, pctx, ngx_stream_prometheus_module);
 
-    /* the one per-session cost before the session ends: an atomic add */
     ctx = pmcf->zone->data;
-    (void) ngx_atomic_fetch_add(&ctx->sh->active, 1);
-    pctx->counted = 1;
+
+    if (!pmcf->source) {
+        /* the one per-session cost before the session ends: an atomic add */
+        (void) ngx_atomic_fetch_add(&ctx->sh->active, 1);
+        pctx->counted = 1;
+        return NGX_DECLINED;
+    }
+
+    /*
+     * Per caller: as known now (a first session from a new address starts
+     * its lookup here). The key is kept so the end of the session takes one
+     * off the same series even if the answer has changed by then.
+     */
+
+    len = ngx_prom_stream_label(labels, 0, "state", (u_char *) "active",
+                                sizeof("active") - 1);
+    len = ngx_prom_stream_source(s, pmcf, labels, len);
+
+    key.data = ngx_pnalloc(s->connection->pool, len);
+    if (key.data == NULL) {
+        return NGX_DECLINED;
+    }
+
+    key.len = len;
+    ngx_memcpy(key.data, labels, len);
+
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+
+    if (ngx_prom_stream_active_add(ctx, &key, 1) == NGX_OK) {
+        pctx->active = key;
+        pctx->generation = ctx->sh->generation;
+        pctx->counted = 1;
+    }
+
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
 
     return NGX_DECLINED;
 }
@@ -699,8 +851,21 @@ ngx_stream_prometheus_log(ngx_stream_session_t *s)
     pctx = ngx_stream_get_module_ctx(s, ngx_stream_prometheus_module);
 
     if (pctx && pctx->counted) {
-        (void) ngx_atomic_fetch_add(&ctx->sh->active, -1);
         pctx->counted = 0;
+
+        if (pctx->active.data == NULL) {
+            (void) ngx_atomic_fetch_add(&ctx->sh->active, -1);
+
+        } else {
+            ngx_shmtx_lock(&ctx->shpool->mutex);
+
+            /* a reset since (a reload with new labels) has dropped it */
+            if (pctx->generation == ctx->sh->generation) {
+                (void) ngx_prom_stream_active_add(ctx, &pctx->active, -1);
+            }
+
+            ngx_shmtx_unlock(&ctx->shpool->mutex);
+        }
     }
 
     pscf = ngx_stream_get_module_srv_conf(s, ngx_stream_prometheus_module);
@@ -755,6 +920,10 @@ ngx_stream_prometheus_log(ngx_stream_session_t *s)
     if (sc->label[NGX_PROM_SL_STATUS]) {
         p = ngx_sprintf(num, "%03ui", s->status);
         len = ngx_prom_stream_label(labels, len, "status", num, p - num);
+    }
+
+    if (pmcf->source) {
+        len = ngx_prom_stream_source(s, pmcf, labels, len);
     }
 
     key.data = labels;
@@ -866,6 +1035,68 @@ ngx_stream_prometheus_init(ngx_conf_t *cf)
     }
 
     *h = ngx_stream_prometheus_log;
+
+    return NGX_OK;
+}
+
+
+/*
+ * The http module's caller identity, found by its zone's name: the two
+ * .so files never link to each other, and either can be loaded first.
+ */
+static ngx_int_t
+ngx_stream_prometheus_init_module(ngx_cycle_t *cycle)
+{
+    ngx_uint_t                          i;
+    ngx_shm_zone_t                     *zone;
+    ngx_list_part_t                    *part;
+    ngx_prom_identity_t                *id;
+    ngx_stream_prometheus_main_conf_t  *pmcf;
+
+    pmcf = ngx_stream_cycle_get_module_main_conf(cycle,
+                                                 ngx_stream_prometheus_module);
+
+    if (pmcf == NULL || !pmcf->source || pmcf->zone == NULL) {
+        return NGX_OK;
+    }
+
+    pmcf->identity = NULL;
+
+    part = &cycle->shared_memory.part;
+    zone = part->elts;
+
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            zone = part->elts;
+            i = 0;
+        }
+
+        if (zone[i].shm.name.len != sizeof(NGX_PROM_HTTP_ZONE_NAME) - 1
+            || ngx_strncmp(zone[i].shm.name.data, NGX_PROM_HTTP_ZONE_NAME,
+                           zone[i].shm.name.len) != 0)
+        {
+            continue;
+        }
+
+        id = zone[i].data;
+
+        if (id && id->magic == NGX_PROM_IDENTITY_MAGIC) {
+            pmcf->identity = id;
+        }
+
+        break;
+    }
+
+    if (pmcf->identity == NULL) {
+        ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                      "prometheus: the stream source labels need "
+                      "ngx_http_prometheus_module with its zone; every "
+                      "caller is \"unknown\"");
+    }
 
     return NGX_OK;
 }

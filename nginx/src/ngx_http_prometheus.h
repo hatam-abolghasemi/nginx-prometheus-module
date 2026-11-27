@@ -17,7 +17,7 @@
 
 #define NGX_PROM_LABELS_MAX      2048
 #define NGX_PROM_ROUTE_MAX       1024
-#define NGX_PROM_ZONE_NAME       "prometheus"
+#define NGX_PROM_ZONE_NAME       NGX_PROM_HTTP_ZONE_NAME
 
 
 /* request labels, in label order (the same order as the OpenResty sidecar) */
@@ -170,6 +170,7 @@ typedef struct {
 
 
 typedef struct {
+    ngx_prom_identity_t  identity;  /* first: the stream module reads it */
     ngx_prom_sh_t     *sh;
     ngx_slab_pool_t   *shpool;
     uint32_t           layout;      /* of the config this zone belongs to */
@@ -243,6 +244,8 @@ void ngx_prom_source_caller(ngx_http_request_t *r, ngx_str_t *mode,
     ngx_prom_name_t *service, ngx_prom_name_t *namespace);
 void ngx_prom_source_self(ngx_http_prometheus_main_conf_t *pmcf,
     ngx_prom_name_t *app, ngx_prom_name_t *namespace);
+void ngx_prom_source_stream(void *data, struct sockaddr *sa,
+    ngx_prom_name_t *service, ngx_prom_name_t *namespace);
 ngx_flag_t ngx_prom_source_own_host(ngx_http_prometheus_main_conf_t *pmcf,
     ngx_str_t *host, ngx_prom_name_t *service);
 
