@@ -60,7 +60,23 @@ COPY --chmod=755 docker/40-prometheus-sidecar.sh /docker-entrypoint.d/
 # load_module and stream{} must sit in nginx.conf's main context, where the
 # stock nginx.conf has no include: the two load_module lines and an include
 # of main.d/ (stream{} files: the sidecar's, or your own) go at its top.
+#
+# https interception verifies destinations against the system CA bundle: a
+# flavor without one gets the distro's, so INTERCEPT_TLS=on works on all.
 RUN set -eux; \
+    bundle=""; \
+    for f in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem /etc/pki/tls/certs/ca-bundle.crt; do \
+        if [ -s "$f" ]; then bundle=$f; break; fi; \
+    done; \
+    if [ -z "$bundle" ]; then \
+        if command -v apk > /dev/null; then \
+            apk add --no-cache ca-certificates; \
+        elif command -v apt-get > /dev/null; then \
+            apt-get update; \
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ca-certificates; \
+            rm -rf /var/lib/apt/lists/*; \
+        fi; \
+    fi; \
     mkdir -p /etc/nginx/main.d; \
     sed -i -e '1i load_module modules/ngx_http_prometheus_module.so;' \
            -e '1i load_module modules/ngx_stream_prometheus_module.so;' \

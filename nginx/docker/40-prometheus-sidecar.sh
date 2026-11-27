@@ -1,6 +1,15 @@
 #!/bin/sh
 # Run by the nginx image's entrypoint (/docker-entrypoint.d/) at each start.
-# Without APP_PORT it does nothing: the image is stock nginx plus metrics.
+# Without APP_PORT it does nothing but PROMETHEUS_CONFIG: the image is stock
+# nginx plus metrics.
+#
+#   PROMETHEUS_CONFIG="prometheus_metric request_duration_histogram on; prometheus_label client_subnet on;"
+#                            module directives for http{}, without mounting a
+#                            file (any image, sidecar or not). If nginx -t
+#                            rejects them they are left out and logged: a typo
+#                            in a metrics setting never stops nginx.
+#   PROMETHEUS_STREAM_CONFIG the same for stream{} (with STREAM), e.g.
+#                            "prometheus_label source_service on;"
 #
 # With APP_PORT set, the image becomes a sidecar in front of an app:
 #
@@ -26,6 +35,18 @@
 #                            (INTERCEPT_CA_CERT / INTERCEPT_CA_KEY).
 #                            Destinations are verified against the system
 #                            trust store (INTERCEPT_TRUSTED_CA).
+#   INTERCEPT_BYPASS="pinned.example.com,.bank.example"
+#                            hosts never decrypted (certificate pinning,
+#                            mTLS): relayed as CONNECT. ".x" is x and every
+#                            name under it, "*.x" every name under it.
+#   INTERCEPT_CA_RELOAD=60   seconds between checks of the CA files; nginx is
+#                            reloaded when they change (a rotated Secret).
+#                            0: never.
+#   INTERCEPT_TLS_PORT=3129, INTERCEPT_H2C_PORT=3130
+#                            the loopback ports of the two terminators, if the
+#                            app needs those.
+#   IPV6=on                  outbound and interception resolve IPv6 (AAAA)
+#                            too; IPv4 is preferred. Off by default.
 #   STREAM="redis:16379:redis.data.svc:6379 postgres:15432:db.data.svc:5432"
 #                            stream (L4): for each <name>:<port>:<host>:<port>,
 #                            a TCP proxy on 127.0.0.1:<port> to <host>:<port>,
@@ -35,7 +56,35 @@
 # Everything else is plain nginx config: mount more files into conf.d/.
 set -eu
 
-[ -n "${APP_PORT:-}" ] || exit 0
+extra=/etc/nginx/conf.d/prometheus-env.conf
+stream_extra=/etc/nginx/main.d/prometheus-env-stream.include
+
+# $1: the file, $2: its directives, $3: the variable's name. Written as is,
+# then dropped again if nginx -t says no.
+env_config() {
+    if ! { echo "# Generated at start from $3"; printf '%s\n' "$2"; } > "$1" 2>/dev/null; then
+        echo "$0: $3 is set but $1 can't be written" >&2
+        return 0
+    fi
+}
+
+check_env_config() {
+    [ -s "$extra" ] || [ -s "$stream_extra" ] || return 0
+
+    if ! err=$(nginx -t -q 2>&1); then
+        rm -f "$extra"
+        : > "$stream_extra" 2> /dev/null || true
+        echo "$0: PROMETHEUS_CONFIG / PROMETHEUS_STREAM_CONFIG left out, nginx -t: $err" >&2
+    fi
+}
+
+rm -f "$extra"
+[ -z "${PROMETHEUS_CONFIG:-}" ] || env_config "$extra" "$PROMETHEUS_CONFIG" PROMETHEUS_CONFIG
+
+if [ -z "${APP_PORT:-}" ]; then
+    check_env_config
+    exit 0
+fi
 
 case $APP_PORT in
     ''|*[!0-9]*) echo "$0: APP_PORT must be a port number, got \"$APP_PORT\"" >&2; exit 1 ;;
@@ -110,6 +159,17 @@ server {
 EOF
 }
 
+# a port number, or exit
+port_of() {
+    case $2 in
+        ''|*[!0-9]*) echo "$0: $1 must be a port number, got \"$2\"" >&2; exit 1 ;;
+    esac
+    if [ "$2" -lt 1 ] || [ "$2" -gt 65535 ]; then
+        echo "$0: $1 must be a port number, got \"$2\"" >&2; exit 1
+    fi
+    echo "$2"
+}
+
 # $1: the DNS server; $2: the CA certificate; $3: its key; $4: trusted CAs
 intercept() {
     cat <<EOF
@@ -125,10 +185,10 @@ upstream prometheus_intercept_grpc  { server 0.0.0.1; prometheus_intercept_origi
 upstream prometheus_intercept_http  { server 0.0.0.1; prometheus_intercept_origin 256; }
 
 server {
-    listen      127.0.0.1:3129 ssl proxy_protocol;
+    listen      127.0.0.1:$tls_port ssl proxy_protocol;
     http2       on;
 
-    resolver          $1 ipv6=off valid=10s;
+    resolver          $1 ipv6=$ipv6 valid=10s;
     resolver_timeout  5s;
 
     prometheus_mode               1;
@@ -180,10 +240,10 @@ EOF
 
 # plaintext gRPC (HTTP/2 with prior knowledge) from a CONNECT
 server {
-    listen      127.0.0.1:3130 proxy_protocol;
+    listen      127.0.0.1:$h2c_port proxy_protocol;
     http2       on;
 
-    resolver          $1 ipv6=off valid=10s;
+    resolver          $1 ipv6=$ipv6 valid=10s;
     resolver_timeout  5s;
 
     prometheus_mode               1;
@@ -214,6 +274,26 @@ EOF
 # $1: the DNS server; $2: non-empty when CONNECT can be relayed; $3: non-empty
 # when CONNECTs are intercepted
 outbound() {
+    if [ -n "$3" ] && [ -n "$bypass" ]; then
+        echo
+        echo "# INTERCEPT_BYPASS: these hosts are relayed, never decrypted"
+        echo "map \$host \$prometheus_intercept_bypass {"
+        echo "    hostnames;"
+        echo "    default  0;"
+        for h in $bypass; do
+            echo "    $h  1;"
+        done
+        echo "}"
+        cat <<'EOF'
+
+map "$request_method:$prometheus_intercept_bypass" $prometheus_connect {
+    default      "";
+    "CONNECT:0"  intercept;
+    "CONNECT:1"  relay;
+}
+EOF
+    fi
+
     cat <<EOF
 
 # outbound: a forward proxy for the app's egress, loopback only. Point the
@@ -222,7 +302,7 @@ server {
     listen       127.0.0.1:3128;
     server_name  outbound;
 
-    resolver          $1 ipv6=off valid=10s;
+    resolver          $1 ipv6=$ipv6 valid=10s;
     resolver_timeout  5s;
 
     prometheus_mode 1;
@@ -230,13 +310,26 @@ server {
     location / {
 EOF
 
-    if [ -n "$3" ]; then
-        cat <<'EOF'
+    if [ -n "$3" ] && [ -n "$bypass" ]; then
+        cat <<EOF
         # HTTPS and gRPC: the tunnel's first bytes pick where it goes. TLS
-        # and plaintext gRPC are decoded on :3129 / :3130, anything else is
-        # relayed as is.
-        if ($request_method = CONNECT) {
-            prometheus_intercept_connect;
+        # and plaintext gRPC are decoded on :$tls_port / :$h2c_port, anything
+        # else is relayed as is; INTERCEPT_BYPASS hosts are always relayed.
+        if (\$prometheus_connect = intercept) {
+            prometheus_intercept_connect  tls=127.0.0.1:$tls_port h2c=127.0.0.1:$h2c_port;
+        }
+        if (\$prometheus_connect = relay) {
+            tunnel_pass;
+        }
+
+EOF
+    elif [ -n "$3" ]; then
+        cat <<EOF
+        # HTTPS and gRPC: the tunnel's first bytes pick where it goes. TLS
+        # and plaintext gRPC are decoded on :$tls_port / :$h2c_port, anything
+        # else is relayed as is.
+        if (\$request_method = CONNECT) {
+            prometheus_intercept_connect  tls=127.0.0.1:$tls_port h2c=127.0.0.1:$h2c_port;
         }
 
 EOF
@@ -286,6 +379,31 @@ EOF
 inbound > "$conf"
 
 said=""
+
+case ${IPV6:-off} in
+    on)  ipv6=on ;;
+    off) ipv6=off ;;
+    *)   echo "$0: IPV6 must be on or off, got \"$IPV6\"" >&2; exit 1 ;;
+esac
+
+tls_port=$(port_of INTERCEPT_TLS_PORT "${INTERCEPT_TLS_PORT:-3129}")
+h2c_port=$(port_of INTERCEPT_H2C_PORT "${INTERCEPT_H2C_PORT:-3130}")
+ca_reload=${INTERCEPT_CA_RELOAD:-60}
+
+case $ca_reload in
+    ''|*[!0-9]*) echo "$0: INTERCEPT_CA_RELOAD must be seconds, got \"$ca_reload\"" >&2; exit 1 ;;
+esac
+
+# host names, lowercased, one per word; anything else is an error
+bypass=""
+
+for h in $(echo "${INTERCEPT_BYPASS:-}" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
+    case $h in
+        *[!a-z0-9.*-]*|'')
+            echo "$0: INTERCEPT_BYPASS entry \"$h\" is not a host name" >&2; exit 1 ;;
+    esac
+    bypass="$bypass $h"
+done
 
 if [ "${OUTBOUND:-on}" != "off" ]; then
     # names are resolved the way the app resolves them: the pod's own DNS
@@ -342,6 +460,7 @@ if [ "${OUTBOUND:-on}" != "off" ]; then
         if [ -n "$icept" ]; then
             intercept "$dns" "$ca_cert" "$ca_key" "$trusted" >> "$conf"
             said=", outbound on 127.0.0.1:3128 with https interception"
+            [ -n "$bypass" ] && said="$said (bypassed:$bypass)"
         elif [ -n "$tunnel" ]; then
             said=", outbound on 127.0.0.1:3128"
         else
@@ -362,6 +481,11 @@ if [ -n "${STREAM:-}" ]; then
         echo "# Generated at start by /docker-entrypoint.d/40-prometheus-sidecar.sh"
         echo
         echo "stream {"
+
+        if [ -n "${PROMETHEUS_STREAM_CONFIG:-}" ]; then
+            env_config "$stream_extra" "$PROMETHEUS_STREAM_CONFIG" PROMETHEUS_STREAM_CONFIG
+            echo "    include $stream_extra;"
+        fi
 
         for entry in $STREAM; do
             name=${entry%%:*}
@@ -402,4 +526,32 @@ EOF
     said="$said, stream: $STREAM"
 fi
 
+if [ -n "${PROMETHEUS_STREAM_CONFIG:-}" ] && [ -z "${STREAM:-}" ]; then
+    echo "$0: PROMETHEUS_STREAM_CONFIG is set but STREAM isn't; ignored" >&2
+fi
+
+check_env_config
+
 echo "$0: sidecar for 127.0.0.1:$APP_PORT${POD_CIDR:+, callers in $POD_CIDR}$said"
+
+# A rotated CA (a Secret updated in place) is read again: the master reads it
+# at each load, so a reload is all it takes. Checked every INTERCEPT_CA_RELOAD
+# seconds, from the background, for as long as the container runs.
+if [ -n "${icept:-}" ] && [ "$ca_reload" -gt 0 ]; then
+    (
+        sum() { cat "$ca_cert" "$ca_key" 2> /dev/null | cksum; }
+        last=$(sum)
+
+        while sleep "$ca_reload"; do
+            now=$(sum)
+            [ "$now" = "$last" ] && continue
+
+            if nginx -t -q 2> /dev/null; then
+                nginx -s reload && last=$now \
+                    && echo "$0: the interception CA changed; nginx reloaded" >&2
+            else
+                echo "$0: the interception CA changed but nginx -t fails; not reloaded" >&2
+            fi
+        done
+    ) < /dev/null > /dev/null &
+fi
