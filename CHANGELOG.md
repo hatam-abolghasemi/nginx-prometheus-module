@@ -13,6 +13,22 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.6.1 — 2026-11-27
+
+### 2026-11-27
+
+- **Deprecated:** the old image names (`…/nginx-prometheus-module/nginx`,
+  `…/nginx-prometheus-module/openresty`, `openresty-prometheus-exporter`) and
+  the flavor tags no longer built since v2.3.1 (nginx: anything but default
+  and `alpine`; OpenResty: anything but `alpine` and `bookworm`). They will be
+  deleted from ghcr.io; move to `ghcr.io/hatam-abolghasemi/nginx` and
+  `…/openresty`, main flavors, or build another flavor yourself.
+  [docs/images.md](docs/images.md#deprecated).
+- **The defaults stay:** `latest` and `alpine` are the newest mainline, which
+  has https outbound and interception; `stable[-alpine]` is the newest stable.
+- `.github/scripts/prune-images.sh`: lists what's deprecated on ghcr.io
+  (`--delete` deletes it); untagged per-platform manifests are never touched.
+
 ## v2.6.0 — 2026-11-27
 
 ### 2026-11-27

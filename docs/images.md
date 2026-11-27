@@ -63,14 +63,22 @@ build compiles the module against the nginx inside that exact image, so the
 result is the same as a published tag. Only the `.so` files, for your own
 nginx image: add `--target module --output type=local,dest=out`.
 
-## Older names
+## Deprecated
 
-| Until | Name |
-|---|---|
-| v2.3.0 | `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx`, `…/nginx-prometheus-module/openresty` |
-| v1.x | `ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter` |
+These get no new builds and will be deleted from ghcr.io. Move to the names
+and tags above, or [build the flavor yourself](#any-other-flavor).
 
-They stay pullable, but get no new builds: move to the names above.
+| Deprecated | Last built | Instead |
+|---|---|---|
+| `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx` | v2.3.0 | `ghcr.io/hatam-abolghasemi/nginx`, same tags |
+| `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty` | v2.3.0 | `ghcr.io/hatam-abolghasemi/openresty`, same tags |
+| `ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter` | v1.x | `ghcr.io/hatam-abolghasemi/openresty` |
+| nginx flavor tags other than default and `alpine` (`perl`, `otel`, `alpine-slim`, `trixie`, ...) | v2.3.0 | the default or `alpine` tag, or one `docker build` |
+| openresty flavor tags other than `alpine` and `bookworm` (`noble`, `rocky`, ...) | v2.3.0 | `alpine` / `bookworm`, or one `docker build` |
+
+What will go, and deleting it (the maintainer, with `delete:packages`):
+`sh .github/scripts/prune-images.sh` lists it, `--delete` deletes it.
+Exact version tags of the main flavors stay.
 
 ## Pinning
 
