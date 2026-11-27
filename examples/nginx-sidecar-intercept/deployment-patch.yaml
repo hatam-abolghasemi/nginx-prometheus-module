@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: example-app
+spec:
+  template:
+    spec:
+      volumes:
+      - name: egress-ca
+        secret:
+          secretName: egress-ca
+      - name: egress-ca-public          # ca.crt only, for the app's trust
+        secret:
+          secretName: egress-ca
+          items:
+          - { key: ca.crt, path: ca.crt }
+      - name: trust
+        emptyDir: {}
+
+      initContainers:
+      # the system CAs plus the interception CA, in one bundle for the app
+      - name: trust-bundle
+        image: ghcr.io/hatam-abolghasemi/nginx:mainline-alpine
+        command:
+        - sh
+        - -c
+        - cat /etc/ssl/certs/ca-certificates.crt /egress-ca/ca.crt > /trust/ca-bundle.crt
+        volumeMounts:
+        - { name: egress-ca-public, mountPath: /egress-ca, readOnly: true }
+        - { name: trust, mountPath: /trust }
+        resources:
+          requests: { cpu: 10m, memory: 16Mi }
+          limits:   { cpu: 100m, memory: 32Mi }
+
+      containers:
+      - name: app
+        env:
+        # OpenSSL-based clients (curl, Python, Ruby, PHP) and Go read these
+        - { name: SSL_CERT_FILE,      value: /trust/ca-bundle.crt }
+        - { name: CURL_CA_BUNDLE,     value: /trust/ca-bundle.crt }
+        - { name: REQUESTS_CA_BUNDLE, value: /trust/ca-bundle.crt }
+        - { name: GRPC_DEFAULT_SSL_ROOTS_FILE_PATH, value: /trust/ca-bundle.crt }
+        # Node.js adds this CA to its own
+        - { name: NODE_EXTRA_CA_CERTS, value: /egress-ca/ca.crt }
+        # Java: import /egress-ca/ca.crt into a truststore instead
+        volumeMounts:
+        - { name: trust, mountPath: /trust, readOnly: true }
+        - { name: egress-ca-public, mountPath: /egress-ca, readOnly: true }
+
+      - name: nginx
+        env:
+        - { name: INTERCEPT_TLS, value: "on" }
+        # hosts that pin certificates or use mTLS: relayed, never decrypted
+        # - { name: INTERCEPT_BYPASS, value: "pinned.example.com" }
+        volumeMounts:
+        - { name: egress-ca, mountPath: /etc/nginx/intercept, readOnly: true }

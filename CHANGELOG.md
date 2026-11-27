@@ -13,6 +13,42 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.6.0 — 2026-11-27
+
+### 2026-11-27
+
+- **The C image is as easy as the OpenResty one.** New sidecar variables:
+  `PROMETHEUS_CONFIG` / `PROMETHEUS_STREAM_CONFIG` take module directives
+  with no file to mount (any image, sidecar or not); if `nginx -t` rejects
+  them they're left out and logged, and nginx starts anyway.
+  `INTERCEPT_BYPASS` (hosts never decrypted, relayed as `CONNECT`, as in the
+  Lua image), `INTERCEPT_CA_RELOAD` (a CA rotated in place is picked up
+  with a reload, every 60s by default), `INTERCEPT_TLS_PORT` /
+  `INTERCEPT_H2C_PORT`, and `IPV6`. Guide:
+  [docs/nginx/sidecar.md](docs/nginx/sidecar.md).
+- **https interception, configurable and IPv6:**
+  `prometheus_intercept_connect tls=<addr> h2c=<addr>;` puts the terminators
+  anywhere nginx can connect (`host:port`, `[v6]:port`, `unix:/path`;
+  default `127.0.0.1:3129` / `:3130`). IPv6 CONNECT targets
+  (`[2001:db8::1]:443`) are relayed and decrypted, with certificates for the
+  address, and IPv6 answers are used when the resolver gives them (IPv4
+  first). The per-worker pool and certificates are documented as by design.
+- **Kubernetes example with interception:**
+  [examples/nginx-sidecar-intercept/](examples/nginx-sidecar-intercept/), an
+  overlay on the sidecar example; an init container gives the app a trust
+  bundle with your CA, so the app doesn't change.
+- **The image always has a CA bundle** (installed at build time where a flavor
+  has none), so `INTERCEPT_TLS=on` works on every flavor.
+- **The quickstart runs either image:**
+  `SIDECAR_IMAGE=ghcr.io/hatam-abolghasemi/nginx:mainline-alpine docker compose up -d`.
+- **Tests:** real gRPC through interception (grpcs and h2c, unary and
+  streaming, `grpc_<code>` from trailers and from a trailers-only answer),
+  terminators on a custom port and a unix socket, IPv6 where the runner has
+  it. New `nginx/tests/sidecar_test.sh` runs the image's sidecar script with
+  the image's layout in namespaces of its own, no Docker: stock, sidecar,
+  outbound, stream, interception, bypass, custom ports, CA rotation,
+  `PROMETHEUS_CONFIG`. In CI.
+
 ## v2.5.0 — 2026-11-27
 
 ### 2026-11-27

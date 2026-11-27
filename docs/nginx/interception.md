@@ -77,13 +77,30 @@ non-200 HTTP status is kept as is.
    client at it (`SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE`,
    a Java truststore).
 
+All three steps, ready to apply:
+[`examples/nginx-sidecar-intercept/`](../../examples/nginx-sidecar-intercept/),
+an overlay on the sidecar example. Its init container gives the app one bundle
+of the system CAs plus yours, and points the usual variables at it, so the app
+itself doesn't change:
+
+```bash
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 3650 \
+  -subj "/CN=egress-intercept" -keyout examples/nginx-sidecar-intercept/ca.key \
+  -out examples/nginx-sidecar-intercept/ca.crt
+sudo kubectl apply -k examples/nginx-sidecar-intercept/
+```
+
 The start log says `outbound on 127.0.0.1:3128 with https interception`.
 
 | Env | Default | |
 |---|---|---|
 | `INTERCEPT_TLS` | `off` | `on` turns it on |
 | `INTERCEPT_CA_CERT`, `INTERCEPT_CA_KEY` | `/etc/nginx/intercept/ca.crt`, `ca.key` | The CA |
-| `INTERCEPT_TRUSTED_CA` | the system bundle | The CAs destinations are verified against |
+| `INTERCEPT_TRUSTED_CA` | the system bundle | The CAs destinations are verified against (the image always has one) |
+| `INTERCEPT_BYPASS` | — | Hosts never decrypted, comma separated: relayed as `CONNECT`. `.x` is `x` and every name under it, `*.x` every name under it. For clients that pin certificates or use mTLS |
+| `INTERCEPT_CA_RELOAD` | `60` | Seconds between checks of the CA files; nginx reloads when they change (a Secret rotated in place, cert-manager). `0`: never |
+| `INTERCEPT_TLS_PORT`, `INTERCEPT_H2C_PORT` | `3129`, `3130` | The terminators' loopback ports, if the app uses those |
+| `IPV6` | `off` | `on`: destinations resolve to IPv6 too, IPv4 preferred. IPv6 literals (`CONNECT [2001:db8::1]:443`) work either way |
 
 ## On your own nginx
 
@@ -92,7 +109,7 @@ The sidecar's config is plain nginx; see what the image generates in
 
 | Directive | Context | |
 |---|---|---|
-| `prometheus_intercept_connect;` | location, if in location | Handles CONNECT here: first bytes to `:3129` / `:3130`, or relayed. Use it instead of `tunnel_pass` |
+| `prometheus_intercept_connect [tls=<addr>] [h2c=<addr>];` | location, if in location | Handles CONNECT here: TLS to the `tls=` terminator (default `127.0.0.1:3129`), the HTTP/2 preface to `h2c=` (`127.0.0.1:3130`), anything else relayed. An address is `host:port`, `[v6]:port` or `unix:/path`. Use it instead of `tunnel_pass` |
 | `prometheus_intercept_ca <crt> <key>;` | http | The CA, read when the configuration is loaded |
 | `$prometheus_intercept_cert`, `$prometheus_intercept_key` | variables | The minted certificate and its key: `ssl_certificate data:$prometheus_intercept_cert;` |
 | `prometheus_intercept_resolve on;` | server, location | Resolve the request's destination (`Host`, port from the PROXY line) with `resolver` |
@@ -111,4 +128,22 @@ The sidecar's config is plain nginx; see what the image generates in
 - Only what goes through `:3128` is touched, and `:3129` / `:3130` listen on
   loopback only.
 - Clients that pin certificates (some mobile SDKs, some cloud clients) will
-  refuse the minted certificate; keep those off the proxy (`NO_PROXY`).
+  refuse the minted certificate: list those hosts in `INTERCEPT_BYPASS` (still
+  recorded, as `CONNECT`), or keep them off the proxy (`NO_PROXY`).
+
+## Limits
+
+- **Per worker, by design:** the idle connections to destinations and the
+  minted certificates are kept by each worker, as nginx's own `keepalive` is.
+  With `worker_processes 4`, a name is minted at most 4 times (one P-256
+  signature each, kept 6 days), and a destination may have up to 4 warm
+  pools. Nothing is shared, so nothing is locked.
+- **A new CA takes a reload:** the master reads it when the configuration
+  loads. The image does that for you (`INTERCEPT_CA_RELOAD`); on your own
+  nginx, `nginx -s reload` after replacing the files. Trust the new CA in the
+  app before you switch, or roll both together as the example does.
+- **IPv6:** literal targets are fine. Names resolve to IPv4 only unless the
+  resolver has `ipv6=on` (`IPV6=on` in the image); IPv4 answers win when both
+  exist.
+- **gRPC-Web** is HTTP/1 or HTTP/2 with a `grpc-web` content type: recorded as
+  HTTPS requests, not as gRPC.

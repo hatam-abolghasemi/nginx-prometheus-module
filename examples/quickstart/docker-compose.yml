@@ -3,6 +3,11 @@
 #
 #   docker compose up -d
 #
+# That runs the Lua module (the OpenResty image). The C module instead, same
+# metrics, same dashboard:
+#
+#   SIDECAR_IMAGE=ghcr.io/hatam-abolghasemi/nginx:mainline-alpine docker compose up -d
+#
 #   app through the sidecar   http://localhost:8000
 #   exporter metrics          http://localhost:9145/metrics
 #   Prometheus                http://localhost:9090
@@ -30,7 +35,7 @@ services:
       - "9145:9145"    # the exporter's /metrics
 
   sidecar:
-    image: ghcr.io/hatam-abolghasemi/openresty:latest
+    image: ${SIDECAR_IMAGE:-ghcr.io/hatam-abolghasemi/openresty:latest}
     network_mode: service:app
     environment:
       APP_PORT: "8080"

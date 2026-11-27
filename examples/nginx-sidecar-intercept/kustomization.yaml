@@ -1,0 +1,28 @@
+# The nginx-sidecar example with https interception on: the app's outbound
+# HTTPS and gRPC are recorded with their real method, route and status.
+# Guide: docs/nginx/interception.md. Placeholder names throughout.
+#
+# 1. A CA, once (keep ca.key out of git):
+#
+#      openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
+#        -days 3650 -subj "/CN=egress-intercept" -keyout ca.key -out ca.crt
+#
+# 2. Apply (the Secret is made from the two files):
+#
+#      sudo kubectl apply -k examples/nginx-sidecar-intercept/
+#
+# The sidecar mounts the CA and decrypts with it; an init container gives the
+# app a trust bundle of the system CAs plus this one (SSL_CERT_FILE and
+# friends), so the app needs no change. A new ca.crt / ca.key here makes a
+# new Secret name, so both containers roll over to it together.
+resources:
+  - ../nginx-sidecar
+
+secretGenerator:
+  - name: egress-ca
+    files:
+      - ca.crt
+      - ca.key
+
+patches:
+  - path: deployment-patch.yaml

@@ -104,8 +104,8 @@ It removes `conf.d/default.conf`, which also listens on `:80`. Metrics are
 served by the module itself on `:9145`, never `:80`: a scrape is not app
 traffic, and the sidecar's own paths never shadow the app's.
 
-Without `APP_PORT` the script does nothing, and the image is stock nginx with
-metrics.
+Without `APP_PORT` the script does nothing but `PROMETHEUS_CONFIG`, and the
+image is stock nginx with metrics.
 
 | Variable | Default | |
 |---|---|---|
@@ -113,12 +113,20 @@ metrics.
 | `POD_CIDR` | — | [Caller identity](identity.md): the pod ranges, space separated, e.g. `10.233.0.0/16` |
 | `CLUSTER_IP_PREFIX` | — | A `Host` that is an IP starting with this (e.g. `10.233.`) is labelled `kubernetes` |
 | `OUTBOUND` | on | `off`: no forward proxy on `127.0.0.1:3128` |
-| `INTERCEPT_TLS` | `off` | [https interception](interception.md): `on` with a CA at `/etc/nginx/intercept/` |
+| `INTERCEPT_TLS` | `off` | [https interception](interception.md): `on` with a CA at `/etc/nginx/intercept/`; more variables [there](interception.md#with-the-sidecar-image) |
+| `IPV6` | `off` | `on`: outbound and interception resolve IPv6 (AAAA) too, IPv4 preferred |
 | `STREAM` | — | [Stream](stream.md): `<name>:<local port>:<host>:<port>` entries, space separated |
+| `PROMETHEUS_CONFIG` | — | Module directives for `http{}`, any image, e.g. `prometheus_metric request_duration_histogram on; prometheus_label client_subnet on;` |
+| `PROMETHEUS_STREAM_CONFIG` | — | The same for `stream{}` (with `STREAM`), e.g. `prometheus_label source_service on;` |
 
-Anything else is plain nginx: mount more `.conf` files into
-`/etc/nginx/conf.d/` (they're included at the `http{}` level) to add
-directives, e.g. `prometheus_metric request_duration_histogram on;`.
+A setting is one variable, no file to mount: `PROMETHEUS_CONFIG` takes any
+[directive](README.md#directives) of the module. If `nginx -t` rejects it,
+it's left out and the reason logged; a typo in a metrics setting never stops
+nginx, which also carries the app's traffic.
+
+For more, it's plain nginx: mount `.conf` files into `/etc/nginx/conf.d/`
+(included at the `http{}` level), or `stream{}` blocks into
+`/etc/nginx/main.d/`.
 
 **Read-only root filesystem?** The script writes into `/etc/nginx/conf.d/`;
 mount an `emptyDir` there, or mount your own `sidecar.conf` and leave

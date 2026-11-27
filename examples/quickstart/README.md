@@ -17,6 +17,13 @@ docker compose up -d
 | Prometheus | <http://localhost:9090> |
 | The app, through the sidecar | <http://localhost:8000> |
 
+That's the Lua module (the OpenResty image). For the C module, the same
+metrics and dashboard from stock nginx with `load_module`:
+
+```bash
+SIDECAR_IMAGE=ghcr.io/hatam-abolghasemi/nginx:mainline-alpine docker compose up -d
+```
+
 Give it ~30 seconds for traffic to build up, then:
 
 ```bash
@@ -50,5 +57,7 @@ docker compose down
 
 What you don't get on plain Docker: `source_service` / `source_namespace`
 (caller identity needs Kubernetes reverse DNS). For the real setup, see
-[`examples/openresty-sidecar/`](../openresty-sidecar/) and the
-[docs index](../../docs/openresty/README.md).
+[`examples/nginx-sidecar/`](../nginx-sidecar/) (the C module; with https
+interception: [`examples/nginx-sidecar-intercept/`](../nginx-sidecar-intercept/))
+or [`examples/openresty-sidecar/`](../openresty-sidecar/) (Lua), and the
+[docs](../../docs/README.md).
