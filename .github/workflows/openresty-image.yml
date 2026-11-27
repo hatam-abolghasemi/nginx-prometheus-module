@@ -1,11 +1,14 @@
 name: OpenResty image
 
-# Mirrors docker-openresty: for every flavor upstream publishes for a release
-# (alpine, bookworm, noble, rocky, ...), build that flavor with this repo baked
-# in, on the same platforms, under the same tags -- only the image name differs.
+# Rebuilds docker-openresty with the Lua module baked in: for each release,
+# the main flavors (DEFAULT_FLAVORS: alpine and bookworm), on the same
+# platforms, under the same tags -- only the image name differs.
 #
 #   openresty/openresty:<release>-<flavor>
-#   ghcr.io/<owner>/nginx-prometheus-module/openresty:<release>-<flavor>
+#   ghcr.io/<owner>/openresty:<release>-<flavor>
+#
+# Any other flavor is one docker build away (docs/images.md#any-other-flavor),
+# or dispatch this workflow with flavors=noble,rocky (or "all").
 #
 # This is the OpenResty sidecar (the Lua exporter under lib/ and vendor/),
 # unchanged by the native module. Flavors and platforms are read from Docker
@@ -30,7 +33,7 @@ on:
         required: false
         default: ""
       flavors:
-        description: comma-separated flavors, e.g. alpine,bookworm (empty = all)
+        description: comma-separated flavors, e.g. noble,rocky, "all" for every one (empty = the main ones)
         required: false
         default: ""
 
@@ -47,6 +50,8 @@ env:
   BASE_IMAGE: openresty/openresty
   # the flavor :latest points at (upstream's own :latest is bookworm)
   LATEST_FLAVOR: alpine
+  # the flavors built when none are asked for
+  DEFAULT_FLAVORS: alpine,bookworm
 
 jobs:
   detect:
@@ -104,7 +109,7 @@ jobs:
           REQUESTED_FLAVORS: ${{ inputs.flavors }}
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')/openresty"
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/openresty"
 
           # Every Docker Hub tag "<release>-<flavor>" with its linux platforms.
           # Upstream also publishes per-arch tags ("<release>-alpine-arm64"):
@@ -129,7 +134,9 @@ jobs:
             url=$(jq -r '.next // ""' <<< "$page")
           done
 
-          wanted=",${REQUESTED_FLAVORS// /},"
+          wanted="${REQUESTED_FLAVORS// /}"
+          wanted=",${wanted:-$DEFAULT_FLAVORS},"
+          [ "$wanted" = ",all," ] && wanted=",,"
           selected=""
           while IFS= read -r row; do
             [ -n "$row" ] || continue
@@ -354,7 +361,7 @@ jobs:
       - name: Build and push
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')/openresty"
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/openresty"
 
           # docker-openresty's tag scheme, per flavor
           tags=("$UPSTREAM_TAG-$FLAVOR")

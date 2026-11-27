@@ -88,6 +88,10 @@ NOTE
         exit 0 ;;
 esac
 
+# the images' names until v2.3.1
+images_prefix=ghcr.io/hatam-abolghasemi
+case $tag in v2.0.*|v2.1.*|v2.2.*|v2.3.0) images_prefix=ghcr.io/hatam-abolghasemi/nginx-prometheus-module ;; esac
+
 # where the build-from-source guide was before the nginx/ and openresty/ split
 guide=docs/nginx/README.md
 stream_note=" For stream (L4), load \`ngx_stream_prometheus_module.so\` too; its metrics are on the same \`/metrics\`."
@@ -102,8 +106,8 @@ The \`.so\` files attached to this release are built from this tag for the newes
 ## Images
 
 \`\`\`
-ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:<nginx-tag>
-ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:<openresty-tag>-<flavor>
+$images_prefix/nginx:<nginx-tag>
+$images_prefix/openresty:<openresty-tag>-<flavor>
 \`\`\`
 
 The tags are the upstream images' own and are rebuilt as this project changes; pin a digest in production ([images]($repo/blob/$tag/docs/images.md)).

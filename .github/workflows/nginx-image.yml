@@ -1,15 +1,16 @@
 name: nginx image
 
-# Mirrors the official nginx image: for the newest mainline and the newest
-# stable nginx, every flavor upstream publishes (debian, alpine, alpine-slim,
-# perl, otel, ...) is rebuilt with ngx_http_prometheus_module loaded, on the
-# same platforms, under the same tags -- only the image name differs.
+# Rebuilds the official nginx image with the module loaded: for the newest
+# mainline and the newest stable nginx, the main flavors (DEFAULT_FLAVORS:
+# the debian default and alpine), on the same platforms, under the same tags --
+# only the image name differs.
 #
 #   nginx:<tag>
-#   ghcr.io/<owner>/nginx-prometheus-module/nginx:<tag>
+#   ghcr.io/<owner>/nginx:<tag>
 #
-# Flavors and platforms are read from Docker Hub for each version, so a flavor
-# upstream adds or drops shows up here without editing this file.
+# Any other flavor is one docker build away (docs/images.md#any-other-flavor),
+# or dispatch this workflow with flavors=perl,otel (or "all"). Platforms are
+# read from Docker Hub for each version.
 #
 # The `assets` job attaches prebuilt .so files (glibc and musl, amd64 and
 # arm64) for the same nginx versions to the newest GitHub Release, built from
@@ -32,7 +33,7 @@ on:
         required: false
         default: ""
       flavors:
-        description: comma-separated flavors, "default" for the plain tag (empty = all)
+        description: comma-separated flavors, "default" for the plain tag, "all" for every one (empty = the main ones)
         required: false
         default: ""
       images:
@@ -55,6 +56,8 @@ concurrency:
 env:
   NGINX_REPO: https://github.com/nginx/nginx.git
   BASE_IMAGE: nginx
+  # the flavors built when none are asked for; "default" is the plain tag
+  DEFAULT_FLAVORS: default,alpine
 
 jobs:
   detect:
@@ -110,8 +113,10 @@ jobs:
           REQUESTED_FLAVORS: ${{ inputs.flavors }}
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')/nginx"
-          wanted=",${REQUESTED_FLAVORS// /},"
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/nginx"
+          wanted="${REQUESTED_FLAVORS// /}"
+          wanted=",${wanted:-$DEFAULT_FLAVORS},"
+          [ "$wanted" = ",all," ] && wanted=",,"
           selected=""
 
           while IFS= read -r v; do
@@ -288,7 +293,7 @@ jobs:
       - name: Build and push
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')/nginx"
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/nginx"
 
           tag_args=()
           IFS=, read -ra tags <<< "$TAGS"

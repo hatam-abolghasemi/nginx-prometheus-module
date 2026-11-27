@@ -37,7 +37,7 @@ body:
     id: image
     attributes:
       label: Image
-      description: Full tag or digest, e.g. `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:1.31.8.1-0-alpine`. On your own nginx, the commit you copied `lib/` from.
+      description: Full tag or digest, e.g. `ghcr.io/hatam-abolghasemi/openresty:1.31.8.1-0-alpine`. On your own nginx, the commit you copied `lib/` from.
     validations:
       required: true
 
