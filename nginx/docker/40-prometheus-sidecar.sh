@@ -18,6 +18,14 @@
 #                            (HTTP_PROXY / HTTPS_PROXY), recorded as mode="1".
 #                            HTTPS goes through as CONNECT on nginx 1.31+ (the
 #                            tunnel module); on older nginx, plain HTTP only.
+#   INTERCEPT_TLS=on         https interception (nginx 1.31+): the CONNECTs
+#                            that carry TLS or plaintext gRPC are decoded and
+#                            recorded with their real method, route and status.
+#                            Needs a CA the app trusts, at
+#                            /etc/nginx/intercept/ca.crt and ca.key
+#                            (INTERCEPT_CA_CERT / INTERCEPT_CA_KEY).
+#                            Destinations are verified against the system
+#                            trust store (INTERCEPT_TRUSTED_CA).
 #   STREAM="redis:16379:redis.data.svc:6379 postgres:15432:db.data.svc:5432"
 #                            stream (L4): for each <name>:<port>:<host>:<port>,
 #                            a TCP proxy on 127.0.0.1:<port> to <host>:<port>,
@@ -102,7 +110,109 @@ server {
 EOF
 }
 
-# $1: the DNS server; $2: non-empty when CONNECT can be relayed
+# $1: the DNS server; $2: the CA certificate; $3: its key; $4: trusted CAs
+intercept() {
+    cat <<EOF
+
+# https interception: TLS from a CONNECT is decrypted here with a certificate
+# minted for its name and signed by the CA; its requests are recorded and sent
+# on over verified TLS, on connections kept per destination name.
+prometheus_intercept_ca  $2 $3;
+
+upstream prometheus_intercept_https { server 0.0.0.1; prometheus_intercept_origin 256; }
+upstream prometheus_intercept_grpcs { server 0.0.0.1; prometheus_intercept_origin 256; }
+upstream prometheus_intercept_grpc  { server 0.0.0.1; prometheus_intercept_origin 256; }
+upstream prometheus_intercept_http  { server 0.0.0.1; prometheus_intercept_origin 256; }
+
+server {
+    listen      127.0.0.1:3129 ssl proxy_protocol;
+    http2       on;
+
+    resolver          $1 ipv6=off valid=10s;
+    resolver_timeout  5s;
+
+    prometheus_mode               1;
+    prometheus_intercept_resolve  on;
+
+    ssl_certificate      data:\$prometheus_intercept_cert;
+    ssl_certificate_key  data:\$prometheus_intercept_key;
+    ssl_protocols        TLSv1.2 TLSv1.3;
+
+    proxy_ssl_server_name          on;
+    proxy_ssl_name                 \$host;
+    proxy_ssl_verify               on;
+    proxy_ssl_verify_depth         3;
+    proxy_ssl_trusted_certificate  $4;
+
+    grpc_ssl_server_name           on;
+    grpc_ssl_name                  \$host;
+    grpc_ssl_verify                on;
+    grpc_ssl_verify_depth          3;
+    grpc_ssl_trusted_certificate   $4;
+
+    client_max_body_size  0;
+EOF
+    cat <<'EOF'
+
+    location / {
+        # gRPC over TLS (not gRPC-Web): HTTP/2 to the destination
+        if ($content_type ~* "^application/grpc($|[+;\s])") {
+            grpc_pass  grpcs://prometheus_intercept_grpcs;
+        }
+        grpc_set_header          Host  $http_host;
+        grpc_read_timeout        300s;
+        grpc_send_timeout        300s;
+
+        proxy_pass               https://prometheus_intercept_https;
+        proxy_http_version       1.1;
+        proxy_set_header         Host        $http_host;
+        proxy_set_header         Connection  "";
+        proxy_pass_header        Server;
+        proxy_pass_header        Date;
+        proxy_buffering          off;
+        proxy_request_buffering  off;
+        proxy_read_timeout       300s;
+        proxy_send_timeout       300s;
+    }
+}
+EOF
+    cat <<EOF
+
+# plaintext gRPC (HTTP/2 with prior knowledge) from a CONNECT
+server {
+    listen      127.0.0.1:3130 proxy_protocol;
+    http2       on;
+
+    resolver          $1 ipv6=off valid=10s;
+    resolver_timeout  5s;
+
+    prometheus_mode               1;
+    prometheus_intercept_resolve  on;
+    client_max_body_size          0;
+EOF
+    cat <<'EOF'
+
+    location / {
+        if ($content_type ~* "^application/grpc($|[+;\s])") {
+            grpc_pass  grpc://prometheus_intercept_grpc;
+        }
+        grpc_set_header          Host  $http_host;
+        grpc_read_timeout        300s;
+        grpc_send_timeout        300s;
+
+        proxy_pass               http://prometheus_intercept_http;
+        proxy_http_version       1.1;
+        proxy_set_header         Host        $http_host;
+        proxy_set_header         Connection  "";
+        proxy_buffering          off;
+        proxy_request_buffering  off;
+    }
+}
+EOF
+}
+
+# $1: the DNS server; $2: non-empty when CONNECT can be relayed; $3: non-empty
+# when CONNECTs are intercepted
 outbound() {
     cat <<EOF
 
@@ -120,7 +230,17 @@ server {
     location / {
 EOF
 
-    if [ -n "$2" ]; then
+    if [ -n "$3" ]; then
+        cat <<'EOF'
+        # HTTPS and gRPC: the tunnel's first bytes pick where it goes. TLS
+        # and plaintext gRPC are decoded on :3129 / :3130, anything else is
+        # relayed as is.
+        if ($request_method = CONNECT) {
+            prometheus_intercept_connect;
+        }
+
+EOF
+    elif [ -n "$2" ]; then
         cat <<'EOF'
         # HTTPS: the tunnel is relayed as is; host and port are recorded
         if ($request_method = CONNECT) {
@@ -190,9 +310,39 @@ if [ "${OUTBOUND:-on}" != "off" ]; then
             fi
         fi
 
-        outbound "$dns" "$tunnel" >> "$conf"
+        icept=""
 
-        if [ -n "$tunnel" ]; then
+        if [ "${INTERCEPT_TLS:-off}" = "on" ]; then
+            ca_cert=${INTERCEPT_CA_CERT:-/etc/nginx/intercept/ca.crt}
+            ca_key=${INTERCEPT_CA_KEY:-/etc/nginx/intercept/ca.key}
+            trusted=${INTERCEPT_TRUSTED_CA:-}
+
+            if [ -z "$trusted" ]; then
+                for f in /etc/ssl/certs/ca-certificates.crt /etc/ssl/cert.pem \
+                         /etc/pki/tls/certs/ca-bundle.crt; do
+                    if [ -s "$f" ]; then trusted=$f; break; fi
+                done
+            fi
+
+            if [ -z "$tunnel" ]; then
+                echo "$0: INTERCEPT_TLS=on needs nginx 1.31+; interception is off" >&2
+            elif [ ! -r "$ca_cert" ] || [ ! -r "$ca_key" ]; then
+                echo "$0: INTERCEPT_TLS=on but no CA at $ca_cert / $ca_key" >&2
+                exit 1
+            elif [ -z "$trusted" ]; then
+                echo "$0: INTERCEPT_TLS=on but no trusted CA bundle; set INTERCEPT_TRUSTED_CA" >&2
+                exit 1
+            else
+                icept=1
+            fi
+        fi
+
+        outbound "$dns" "$tunnel" "$icept" >> "$conf"
+
+        if [ -n "$icept" ]; then
+            intercept "$dns" "$ca_cert" "$ca_key" "$trusted" >> "$conf"
+            said=", outbound on 127.0.0.1:3128 with https interception"
+        elif [ -n "$tunnel" ]; then
             said=", outbound on 127.0.0.1:3128"
         else
             said=", outbound on 127.0.0.1:3128 (HTTP only: HTTPS needs nginx 1.31+)"

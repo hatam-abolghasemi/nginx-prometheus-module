@@ -275,11 +275,30 @@ jobs:
           fi
           echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
 
+          # https interception, where the tunnel module is: a throwaway CA,
+          # example.com decrypted and sent on over verified TLS
+          if $tunnel; then
+            ca=$(mktemp -d)
+            openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
+              -subj /CN=smoke-ca -keyout "$ca/ca.key" -out "$ca/ca.crt" 2> /dev/null
+            chmod 644 "$ca/ca.key"
+            docker run -d --name smoke-app2 busybox sh -c 'httpd -f -p 8080 -h /tmp'
+            docker run -d --name smoke-intercept --network container:smoke-app2 -e APP_PORT=8080 \
+              -e INTERCEPT_TLS=on -v "$ca:/etc/nginx/intercept:ro" nginx-prometheus:smoke
+            probe2() { docker run --rm --network container:smoke-app2 -v "$ca:/ca:ro" curlimages/curl -sS --retry 10 --retry-connrefused --retry-delay 1 -m 15 "$@"; }
+
+            [ "$(probe2 -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 --cacert /ca/ca.crt https://example.com/)" = "200" ]
+            docker logs smoke-intercept 2>&1 | grep -q 'with https interception'
+            metrics=$(probe2 http://127.0.0.1:9145/metrics)
+            echo "$metrics" | grep -q 'method="GET",route="/",status="200",host="example.com",mode="1",protocol="https"'
+            ! echo "$metrics" | grep -q 'route="example.com:443"'
+          fi
+
       - name: Smoke test logs
         if: always() && steps.smoke-build.outputs.run == 'true'
         run: |
           fatal=0
-          for c in smoke smoke-sidecar; do
+          for c in smoke smoke-sidecar smoke-intercept; do
             docker logs "$c" > /dev/null 2>&1 || continue
             echo "::group::$c"
             docker logs "$c" 2>&1 | tail -n 100
