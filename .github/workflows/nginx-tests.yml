@@ -60,7 +60,7 @@ jobs:
     name: nginx ${{ matrix.version }}${{ matrix.sanitize && ' (asan)' || '' }}
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get install -y --no-install-recommends libpcre2-dev zlib1g-dev libssl-dev netcat-openbsd
+      - run: sudo apt-get install -y --no-install-recommends libpcre2-dev zlib1g-dev libssl-dev netcat-openbsd python3-grpcio
       - name: promtool
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -98,3 +98,5 @@ jobs:
               "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
           done
           sh nginx/tests/stream_test.sh "$RUNNER_TEMP/out/sbin/nginx" "$RUNNER_TEMP/out/modules"
+          # the image's sidecar script, in namespaces of its own: needs root
+          sudo -E env "PATH=$PATH" sh nginx/tests/sidecar_test.sh "$RUNNER_TEMP/out/sbin/nginx" "$RUNNER_TEMP/out/modules"
