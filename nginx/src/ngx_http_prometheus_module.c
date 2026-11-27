@@ -90,6 +90,10 @@ static ngx_prom_metric_def_t  ngx_prom_metrics[NGX_PROM_M_COUNT] = {
 };
 
 
+static ngx_prom_stream_metric_t  ngx_prom_stream_metrics[NGX_PROM_S_COUNT]
+    = NGX_PROM_STREAM_METRICS;
+
+
 static const char  *ngx_prom_label_names[NGX_PROM_L_COUNT] = {
     "method", "route", "status", "client_subnet", "host", "app", "namespace",
     "mode", "source_service", "source_namespace", "protocol"
@@ -1531,7 +1535,8 @@ ngx_prom_reserve(ngx_prom_writer_t *w, size_t need)
 
 
 static void
-ngx_prom_header(ngx_prom_writer_t *w, ngx_prom_metric_def_t *m)
+ngx_prom_header_raw(ngx_prom_writer_t *w, const char *metric,
+    const char *help, const char *type)
 {
     u_char  *p;
 
@@ -1541,7 +1546,14 @@ ngx_prom_header(ngx_prom_writer_t *w, ngx_prom_metric_def_t *m)
     }
 
     w->b->last = ngx_sprintf(p, "# HELP %s %s\n# TYPE %s %s\n",
-                             m->metric, m->help, m->metric, m->type);
+                             metric, help, metric, type);
+}
+
+
+static void
+ngx_prom_header(ngx_prom_writer_t *w, ngx_prom_metric_def_t *m)
+{
+    ngx_prom_header_raw(w, m->metric, m->help, m->type);
 }
 
 
@@ -1661,6 +1673,164 @@ ngx_prom_histogram(ngx_prom_writer_t *w, const char *name, u_char *labels,
 
 
 /*
+ * The stream module's zone, if there is one: found by name in this cycle's
+ * shared memory, so this module needs nothing from the stream module's .so.
+ * Returns the stream zone's errors, for nginx_metric_errors_total.
+ */
+static uint64_t
+ngx_prom_render_stream(ngx_prom_writer_t *w, ngx_pool_t *pool,
+    ngx_msec_t now)
+{
+    size_t                     bytes, size, off, len;
+    u_char                    *snap, *labels, *tail;
+    uint64_t                   errors;
+    ngx_int_t                  c, g, h;
+    ngx_uint_t                 i, m;
+    ngx_atomic_uint_t          active;
+    ngx_queue_t               *q;
+    ngx_list_part_t           *part;
+    ngx_shm_zone_t            *zone;
+    ngx_prom_stream_sh_t      *sh;
+    ngx_prom_stream_ctx_t     *ctx;
+    ngx_prom_stream_conf_t    *sc;
+    ngx_prom_stream_series_t  *s;
+    ngx_prom_stream_metric_t  *md;
+
+    ctx = NULL;
+    part = (ngx_list_part_t *) &ngx_cycle->shared_memory.part;
+    zone = part->elts;
+
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+            part = part->next;
+            zone = part->elts;
+            i = 0;
+        }
+
+        if (zone[i].shm.name.len == sizeof(NGX_PROM_STREAM_ZONE_NAME) - 1
+            && ngx_strncmp(zone[i].shm.name.data, NGX_PROM_STREAM_ZONE_NAME,
+                           zone[i].shm.name.len) == 0)
+        {
+            ctx = zone[i].data;
+            break;
+        }
+    }
+
+    if (ctx == NULL || ctx->magic != NGX_PROM_STREAM_MAGIC || ctx->sh == NULL)
+    {
+        return 0;
+    }
+
+    sc = ctx->conf;
+
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+    bytes = ctx->sh->bytes;
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    bytes += bytes / 8 + 16 * ngx_prom_stream_size(256, sc->tail);
+
+    snap = ngx_palloc(pool, bytes + sizeof(uint64_t));
+    if (snap == NULL) {
+        w->error = 1;
+        return 0;
+    }
+
+    snap = ngx_align_ptr(snap, sizeof(uint64_t));
+    off = 0;
+
+    ngx_shmtx_lock(&ctx->shpool->mutex);
+
+    sh = ctx->sh;
+
+    for (q = ngx_queue_head(&sh->queue);
+         q != ngx_queue_sentinel(&sh->queue);
+         q = ngx_queue_next(q))
+    {
+        s = ngx_queue_data(q, ngx_prom_stream_series_t, queue);
+        size = ngx_prom_stream_size(s->sn.str.len, sc->tail);
+
+        if (off + size > bytes) {
+            break;
+        }
+
+        ngx_memcpy(snap + off, s, size);
+        off += size;
+    }
+
+    errors = sh->errors;
+    active = sh->active;
+
+    ngx_shmtx_unlock(&ctx->shpool->mutex);
+
+    bytes = off;
+
+    for (m = 0; m < NGX_PROM_S_COUNT; m++) {
+
+        if (!sc->metric[m]) {
+            continue;
+        }
+
+        md = &ngx_prom_stream_metrics[m];
+
+        if (m == NGX_PROM_S_ACTIVE) {
+            ngx_prom_header_raw(w, md->metric, md->help, md->type);
+            ngx_prom_line(w, md->metric, "", NULL, 0, "state=\"active\"",
+                          (double) active);
+            continue;
+        }
+
+        if (bytes == 0) {
+            continue;
+        }
+
+        ngx_prom_header_raw(w, md->metric, md->help, md->type);
+
+        c = md->counter;
+        g = md->gauge;
+        h = md->hist;
+
+        for (off = 0; off < bytes; off += size) {
+            s = (ngx_prom_stream_series_t *) (snap + off);
+            size = ngx_prom_stream_size(s->sn.str.len, sc->tail);
+            labels = (u_char *) s->data;
+            len = s->sn.str.len;
+            tail = labels + ngx_align(len, sizeof(uint64_t));
+
+            if (c >= 0) {
+                ngx_prom_line(w, md->metric, "", labels, len, NULL,
+                              (double) s->counter[c]);
+
+            } else if (g >= 0) {
+                if (g == NGX_PROM_SG_CONNECT
+                    ? (s->up_touched == 0
+                       || now - s->up_touched > sc->gauge_expiry)
+                    : now - s->touched > sc->gauge_expiry)
+                {
+                    continue;
+                }
+
+                ngx_prom_line(w, md->metric, "", labels, len, NULL,
+                              s->gauge[g]);
+
+            } else if (h >= 0) {
+                if (h != NGX_PROM_SH_SESSION && s->up_touched == 0) {
+                    continue;
+                }
+
+                ngx_prom_histogram(w, md->metric, labels, len, tail,
+                                   &sc->hist[h]);
+            }
+        }
+    }
+
+    return errors;
+}
+
+
+/*
  * The exposition of everything in the zone, as a chain allocated from pool.
  * Used by the `prometheus;` location and by the built-in :9145 listener.
  */
@@ -1681,10 +1851,11 @@ ngx_prom_render(ngx_http_prometheus_main_conf_t *pmcf, ngx_pool_t *pool,
     ngx_prom_zone_ctx_t              *ctx;
     ngx_prom_metric_def_t            *md;
     ngx_core_conf_t                  *ccf;
+    uint64_t                          stream_errors;
 
     static ngx_prom_metric_def_t  errors = {
         NULL, "nginx_metric_errors_total",
-        "Requests not recorded because the prometheus zone was full",
+        "Requests and sessions not recorded because a prometheus zone was full",
         "counter", 1, -1, -1
     };
 
@@ -1855,9 +2026,11 @@ ngx_prom_render(ngx_http_prometheus_main_conf_t *pmcf, ngx_pool_t *pool,
         }
     }
 
+    stream_errors = ngx_prom_render_stream(&w, pool, now);
+
     ngx_prom_header(&w, &errors);
     ngx_prom_line(&w, errors.metric, "", NULL, 0, NULL,
-                  (double) hcopy.errors);
+                  (double) (hcopy.errors + stream_errors));
 
     if (w.error) {
         return NGX_ERROR;

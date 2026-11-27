@@ -11,11 +11,10 @@
 #include <ngx_core.h>
 #include <ngx_http.h>
 
+#include "ngx_prometheus_shared.h"
 #include "ngx_http_prometheus_label.h"
 #include "ngx_http_prometheus_identity.h"
 
-
-#define NGX_PROM_MAX_BUCKETS     32
 #define NGX_PROM_LABELS_MAX      2048
 #define NGX_PROM_ROUTE_MAX       1024
 #define NGX_PROM_ZONE_NAME       "prometheus"
@@ -175,13 +174,6 @@ typedef struct {
     ngx_slab_pool_t   *shpool;
     uint32_t           layout;      /* of the config this zone belongs to */
 } ngx_prom_zone_ctx_t;
-
-
-typedef struct {
-    ngx_uint_t         n;
-    double             le[NGX_PROM_MAX_BUCKETS];
-    size_t             offset;      /* into a series' (or the header's) tail */
-} ngx_prom_hist_conf_t;
 
 
 typedef struct ngx_http_prometheus_main_conf_s  ngx_http_prometheus_main_conf_t;
