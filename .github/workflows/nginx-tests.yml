@@ -93,7 +93,7 @@ jobs:
           ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:halt_on_error=1
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
-          for t in module source plug outbound; do
+          for t in module source plug outbound intercept; do
             sh "nginx/tests/${t}_test.sh" "$RUNNER_TEMP/out/sbin/nginx" \
               "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
           done
