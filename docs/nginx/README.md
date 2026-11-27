@@ -41,7 +41,32 @@ Everything [the Lua module](../openresty/README.md) has, this one has too.
 
 ## Install
 
-### The image
+### Into your own image
+
+The module package, `ghcr.io/hatam-abolghasemi/nginx-prometheus-module`, is
+an image with nothing in it but the two `.so` files, under the nginx image's
+tags: `<nginx-version>` (Debian, glibc) and `<nginx-version>-alpine` (musl),
+on every platform upstream nginx is published for. Copy them in from it:
+
+```dockerfile
+FROM nginx:1.31.10-alpine
+COPY --from=ghcr.io/hatam-abolghasemi/nginx-prometheus-module:1.31.10-alpine / /usr/lib/nginx/modules/
+RUN sed -i '1i load_module modules/ngx_http_prometheus_module.so;' /etc/nginx/nginx.conf
+```
+
+Add `load_module modules/ngx_stream_prometheus_module.so;` the same way for
+[stream](stream.md). The tag must be your nginx's exact version, and
+`-alpine` for an Alpine base; `mainline[-alpine]` and `stable[-alpine]` follow
+the newest of each. Its files, to install on a host:
+
+```bash
+docker create --name prom-module ghcr.io/hatam-abolghasemi/nginx-prometheus-module:1.31.10 none
+docker cp prom-module:/ngx_http_prometheus_module.so /etc/nginx/modules/
+docker cp prom-module:/ngx_stream_prometheus_module.so /etc/nginx/modules/
+docker rm prom-module
+```
+
+### The nginx image
 
 Every official `nginx` image tag, rebuilt with the module loaded. Swap the
 image name and keep the tag:

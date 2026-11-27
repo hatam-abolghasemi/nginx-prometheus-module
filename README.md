@@ -28,7 +28,7 @@ nginx_http_upstream_response_time_seconds{method="GET",route="/orders/$param",st
 nginx_stream_connections_total{destination="redis",upstream_addr="10.233.12.7:6379",status="200"} 418
 ```
 
-- [Get it](#get-it)
+- [Get it](#get-it): the module into your nginx, the nginx image, the OpenResty image
 - [Metrics](#metrics) and [labels](#labels)
 - [Features](#features): sidecar, caller identity, outbound, stream
 - [Two implementations](#two-implementations): C for stock nginx, Lua for OpenResty
@@ -36,21 +36,51 @@ nginx_stream_connections_total{destination="redis",upstream_addr="10.233.12.7:63
 
 ## Get it
 
-**The image**: the official `nginx` image, rebuilt with the module loaded
-(mainline and stable, debian and alpine; [any other flavor](docs/images.md#any-other-flavor)
-is one `docker build`). Swap the image name, keep the tag:
+### 1. The module, into your own nginx
+
+The [module package](docs/images.md#the-module) holds the two `.so` files for
+each nginx version and libc, under the nginx image's own tags. In your
+Dockerfile:
+
+```dockerfile
+FROM nginx:1.31.10-alpine
+COPY --from=ghcr.io/hatam-abolghasemi/nginx-prometheus-module:1.31.10-alpine / /usr/lib/nginx/modules/
+RUN sed -i '1i load_module modules/ngx_http_prometheus_module.so;' /etc/nginx/nginx.conf
+```
+
+The tag is your nginx version, with `-alpine` for an Alpine (musl) base. On a
+host instead of an image: a prebuilt `.so` from the
+[releases](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases),
+or built from source for any version in about a second
+([install](docs/nginx/README.md#install)). Every `http{}` server is then
+recorded, and the module opens `:9145` by itself, whatever the rest of the
+configuration is.
+
+### 2. The nginx image
+
+The official `nginx` image with the module loaded, mainline and stable, Alpine
+and Debian, rebuilt whenever upstream releases. Swap the image name, keep the
+tag (`latest` and `alpine` are the newest mainline on Alpine):
 
 ```bash
 docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx:alpine
 curl -s localhost:9145/metrics
 ```
 
-**Your own nginx**: a prebuilt `.so` from the
-[releases](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases)
-for the newest mainline and stable nginx, or built from source for any
-version in about a second ([install](docs/nginx/README.md#install)). Load it
-at the top of `nginx.conf` and every `http{}` server is recorded; the module
-opens `:9145` by itself, whatever the rest of the configuration is.
+With `APP_PORT` it becomes a [sidecar](docs/nginx/sidecar.md) in front of your
+app.
+
+### 3. The OpenResty image
+
+The [Lua module](docs/openresty/README.md), the same metrics on OpenResty,
+rebuilt for every docker-openresty release:
+
+```bash
+docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/openresty:alpine
+```
+
+Both images with Prometheus and Grafana, in one command: the
+[quickstart](examples/quickstart/).
 
 ## Metrics
 
@@ -184,12 +214,15 @@ in one command in the [quickstart](examples/quickstart/), and see its
 ## Images and releases
 
 ```
-ghcr.io/hatam-abolghasemi/nginx:<nginx-tag>
-ghcr.io/hatam-abolghasemi/openresty:<openresty-tag>-<flavor>
+ghcr.io/hatam-abolghasemi/nginx-prometheus-module:<nginx-tag>   the .so files only
+ghcr.io/hatam-abolghasemi/nginx:<nginx-tag>                     nginx with the module loaded
+ghcr.io/hatam-abolghasemi/openresty:<openresty-tag>-<flavor>    OpenResty with the Lua module
 ```
 
-Each image is its upstream rebuilt, smoke-tested and published under
-upstream's own tags. Tags and pinning: [docs/images.md](docs/images.md).
+Each follows its upstream: a new nginx or docker-openresty release, or
+upstream rebuilding a tag on a newer base, is built, smoke-tested and
+published under upstream's own tags within hours. `latest` and `alpine` are
+the newest on Alpine. Tags and pinning: [docs/images.md](docs/images.md).
 
 GitHub **Releases** (`vX.Y.Z`) are this project's own versions: they carry
 the prebuilt `.so` files, and their notes are the [changelog](CHANGELOG.md)

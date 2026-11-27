@@ -97,16 +97,27 @@ guide=docs/nginx/README.md
 stream_note=" For stream (L4), load \`ngx_stream_prometheus_module.so\` too; its metrics are on the same \`/metrics\`."
 case $tag in v2.0.*|v2.1.*|v2.2.*) guide=docs/module.md; stream_note="" ;; esac
 
+# the module package, from v2.7.0: the first way in
+package_note=""
+package_line=""
+case $tag in
+    v2.[0-6].*) ;;
+    *)
+        package_note="The module package has both files for every nginx tag; in your own image: \`COPY --from=$images_prefix/nginx-prometheus-module:<nginx-tag> / /usr/lib/nginx/modules/\`. "
+        package_line="$images_prefix/nginx-prometheus-module:<nginx-tag>
+" ;;
+esac
+
 cat <<NOTE
 
 ## Module
 
-The \`.so\` files attached to this release are built from this tag for the newest mainline and stable nginx, glibc and musl, amd64 and arm64. A module loads only into the nginx version it was built for: check \`nginx -V\`, copy the file into \`modules/\`, and add \`load_module modules/ngx_http_prometheus_module.so;\` at the top of \`nginx.conf\`. That line is the whole setup: metrics are on \`:9145/metrics\`.$stream_note Any other nginx version: [build it from source]($repo/blob/$tag/$guide#from-source).
+${package_note}The \`.so\` files attached to this release are built from this tag for the newest mainline and stable nginx, glibc and musl, amd64 and arm64. A module loads only into the nginx version it was built for: check \`nginx -V\`, copy the file into \`modules/\`, and add \`load_module modules/ngx_http_prometheus_module.so;\` at the top of \`nginx.conf\`. That line is the whole setup: metrics are on \`:9145/metrics\`.$stream_note Any other nginx version: [build it from source]($repo/blob/$tag/$guide#from-source).
 
 ## Images
 
 \`\`\`
-$images_prefix/nginx:<nginx-tag>
+${package_line}$images_prefix/nginx:<nginx-tag>
 $images_prefix/openresty:<openresty-tag>-<flavor>
 \`\`\`
 

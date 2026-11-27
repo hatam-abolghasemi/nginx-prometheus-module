@@ -13,6 +13,29 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.7.0 — 2026-11-27
+
+### 2026-11-27
+
+- **The module as a package:** `ghcr.io/hatam-abolghasemi/nginx-prometheus-module`
+  holds just the two `.so` files, under the nginx image's tags
+  (`<version>` for Debian/glibc, `<version>-alpine` for musl), on every
+  platform upstream nginx is published for.
+  Into your own image: `COPY --from=ghcr.io/hatam-abolghasemi/nginx-prometheus-module:1.31.10-alpine / /usr/lib/nginx/modules/`.
+  [docs/images.md](docs/images.md#the-module).
+- **Upgrading: nginx `latest` is now Alpine**, as in the OpenResty image:
+  `latest` and `alpine` are the newest mainline on Alpine. For Debian, pin
+  `mainline` or a version such as `1.31.10`.
+- **The images follow upstream rebuilds too:** besides new nginx and
+  docker-openresty releases, a tag upstream rebuilds on a newer Debian or
+  Alpine base (same tag, new digest) is rebuilt within hours. Each image
+  records the upstream digest it came from
+  (`org.opencontainers.image.base.digest`). The first scheduled run after this
+  release rebuilds every current tag once, to record it.
+- **The package pages show the newest Alpine first**, with a description:
+  `latest` / `alpine` are pushed last.
+- **Docs in the order you'd use them:** the module into your own nginx, then
+  the nginx image, then the OpenResty image.
 - **CI:** the sanitizer job on nginx 1.30 (the stable line) is green again.
   nginx 1.30 core itself trips UBSan at startup (`memcpy(dst, NULL, 0)` in
   `ngx_pstrdup`, fixed in 1.31), which stopped nginx before any test ran;

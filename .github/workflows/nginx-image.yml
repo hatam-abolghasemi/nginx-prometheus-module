@@ -12,6 +12,20 @@ name: nginx image
 # or dispatch this workflow with flavors=perl,otel (or "all"). Platforms are
 # read from Docker Hub for each version.
 #
+# Each build also pushes the module alone, the two .so files in an empty
+# image, to ghcr.io/<owner>/nginx-prometheus-module under the same tags:
+#
+#   COPY --from=ghcr.io/<owner>/nginx-prometheus-module:<tag> / /usr/lib/nginx/modules/
+#
+# The schedule watches upstream: a new nginx version is built, and so is a
+# version upstream has rebuilt (a new Debian or Alpine base under the same
+# tag): each image records the digest of the upstream image it was built from
+# (org.opencontainers.image.base.digest) and is rebuilt when Docker Hub's
+# digest for that tag differs.
+#
+# `latest` and `alpine` are the newest mainline, alpine. The promote job
+# pushes them last, so the package pages show the newest alpine first.
+#
 # The `assets` job attaches prebuilt .so files (glibc and musl, amd64 and
 # arm64) for the same nginx versions to the newest GitHub Release, built from
 # that release's tag. release.yml dispatches this workflow after a release so
@@ -56,6 +70,10 @@ concurrency:
 env:
   NGINX_REPO: https://github.com/nginx/nginx.git
   BASE_IMAGE: nginx
+  # the package pages' descriptions
+  # (no commas or equals signs: they go through buildx --annotation)
+  IMAGE_DESCRIPTION: "The official nginx image with the Prometheus module loaded - metrics on :9145/metrics. Same tags as nginx; latest and alpine are the newest mainline on Alpine."
+  MODULE_DESCRIPTION: "The Prometheus module for nginx as files only - ngx_http_prometheus_module.so and ngx_stream_prometheus_module.so for one nginx version and libc. Copy them into your own nginx image."
   # the flavors built when none are asked for; "default" is the plain tag
   DEFAULT_FLAVORS: default,alpine
 
@@ -142,14 +160,21 @@ jobs:
                 [ "$newest_in_series" = "true" ] && tags+=("$series$s")
                 if [ "$channel" = "mainline" ]; then
                   tags+=("mainline$s")
-                  tags+=("${flavor:-latest}")
+                  # latest and alpine: the newest mainline, alpine
+                  [ "$flavor" = "alpine" ] && tags+=("alpine" "latest")
                 elif [ "$channel" = "stable" ]; then
                   tags+=("stable$s")
                 fi
-                if [ "$GITHUB_EVENT_NAME" = "schedule" ] \
-                   && docker buildx imagetools inspect "$IMAGE:$version$s" > /dev/null 2>&1; then
-                  echo "$IMAGE:$version$s exists"
-                  continue
+                # on the schedule: built already, from the same upstream image
+                digest=$(jq -r .digest <<< "$row")
+                if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+                  have=$(docker buildx imagetools inspect --raw "$IMAGE:$version$s" 2> /dev/null \
+                         | jq -r '.annotations["org.opencontainers.image.base.digest"] // ""' || true)
+                  if [ -n "$have" ] && [ "$have" = "$digest" ]; then
+                    echo "$IMAGE:$version$s is up to date"
+                    continue
+                  fi
+                  [ -n "$have" ] && echo "upstream nginx:$version$s was rebuilt: $have -> $digest"
                 fi
                 echo "build $version$s ($(jq -r .platforms <<< "$row"))"
                 selected+=$(jq -c --arg v "$version" --arg t "$(IFS=,; echo "${tags[*]}")" \
@@ -158,6 +183,7 @@ jobs:
                 .results[]
                 | select(.name == $v or (.name | startswith($v + "-")))
                 | { flavor: (if .name == $v then "" else (.name | ltrimstr($v + "-")) end),
+                    digest: (.digest // ""),
                     platforms: ([.images[]?
                                  | select(.os == "linux" and .architecture != "unknown")
                                  | "linux/\(.architecture)\(if (.variant // "") != "" then "/" + .variant else "" end)"]
@@ -184,6 +210,7 @@ jobs:
       NGINX_TAG: ${{ matrix.nginx_tag }}
       PLATFORMS: ${{ matrix.platforms }}
       TAGS: ${{ matrix.tags }}
+      BASE_DIGEST: ${{ matrix.digest }}
       GIT_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v5
@@ -312,30 +339,87 @@ jobs:
       - name: Build and push
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/nginx"
+          OWNER="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          IMAGE="$OWNER/nginx"
+          MODULE="$OWNER/nginx-prometheus-module"
 
-          tag_args=()
           IFS=, read -ra tags <<< "$TAGS"
-          for t in "${tags[@]}"; do tag_args+=(-t "$IMAGE:$t"); done
+          image_tags=(); module_tags=()
+          for t in "${tags[@]}"; do
+            image_tags+=(-t "$IMAGE:$t")
+            module_tags+=(-t "$MODULE:$t")
+          done
 
-          docker buildx build \
-            --build-arg BASE_IMAGE="$BASE_IMAGE" \
-            --build-arg NGINX_TAG="$NGINX_TAG" \
-            --platform "$PLATFORMS" \
-            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY" \
-            --label org.opencontainers.image.revision="$GIT_SHA" \
-            --label org.opencontainers.image.version="$NGINX_TAG" \
-            --label org.opencontainers.image.base.name="docker.io/library/$BASE_IMAGE:$NGINX_TAG" \
+          meta=(
+            --build-arg BASE_IMAGE="$BASE_IMAGE"
+            --build-arg NGINX_TAG="$NGINX_TAG"
+            --platform "$PLATFORMS"
+            --label org.opencontainers.image.source="https://github.com/$GITHUB_REPOSITORY"
+            --label org.opencontainers.image.revision="$GIT_SHA"
+            --label org.opencontainers.image.version="$NGINX_TAG"
+            --label org.opencontainers.image.base.name="docker.io/library/$BASE_IMAGE:$NGINX_TAG"
+            --annotation "index,manifest:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
+          )
+          # what the schedule compares with Docker Hub to see an upstream rebuild
+          if [ -n "$BASE_DIGEST" ]; then
+            meta+=(--annotation "index,manifest:org.opencontainers.image.base.digest=$BASE_DIGEST")
+          fi
+
+          # the module alone first, then the image: the same build stage, cached
+          docker buildx build "${meta[@]}" \
+            --annotation "index,manifest:org.opencontainers.image.description=$MODULE_DESCRIPTION" \
+            -f nginx/docker/Dockerfile --target module \
+            "${module_tags[@]}" --push nginx
+
+          docker buildx build "${meta[@]}" \
+            --annotation "index,manifest:org.opencontainers.image.description=$IMAGE_DESCRIPTION" \
             -f nginx/docker/Dockerfile \
-            "${tag_args[@]}" \
-            --push nginx
+            "${image_tags[@]}" --push nginx
 
           {
             echo "### $NGINX_TAG"
-            echo "base \`$BASE_IMAGE:$NGINX_TAG\` · \`$PLATFORMS\` · commit \`${GIT_SHA::7}\`"
+            echo "base \`$BASE_IMAGE:$NGINX_TAG\` (\`${BASE_DIGEST:-unknown digest}\`) · \`$PLATFORMS\` · commit \`${GIT_SHA::7}\`"
             echo
-            printf -- '- `%s`\n' "${tags[@]/#/$IMAGE:}"
+            printf -- '- `%s`\n' "${tags[@]/#/$IMAGE:}" "${tags[@]/#/$MODULE:}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # latest and alpine pushed last: the package pages show the newest alpine
+  # first, with its description
+  promote:
+    needs: [detect, build]
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      VERSIONS: ${{ needs.detect.outputs.versions }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          set -euo pipefail
+          OWNER="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+          mainline=$(jq -r '.[] | select(.channel == "mainline") | .version' <<< "$VERSIONS")
+          [ -n "$mainline" ] || { echo "no mainline in this run"; exit 0; }
+
+          promote() {
+            if ! docker buildx imagetools inspect "$1:$mainline-alpine" > /dev/null 2>&1; then
+              echo "::notice::no $1:$mainline-alpine; nothing to promote"
+              return 0
+            fi
+            docker buildx imagetools create \
+              --annotation "index:org.opencontainers.image.description=$2" \
+              --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+              --annotation "index:org.opencontainers.image.version=$mainline-alpine" \
+              -t "$1:latest" -t "$1:alpine" "$1:$mainline-alpine"
+            echo "- \`$1:latest\`, \`$1:alpine\` = \`$mainline-alpine\`" >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          promote "$OWNER/nginx-prometheus-module" "$MODULE_DESCRIPTION"
+          promote "$OWNER/nginx" "$IMAGE_DESCRIPTION"
 
   assets:
     needs: detect

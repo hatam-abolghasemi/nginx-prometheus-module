@@ -10,6 +10,13 @@ name: OpenResty image
 # Any other flavor is one docker build away (docs/images.md#any-other-flavor),
 # or dispatch this workflow with flavors=noble,rocky (or "all").
 #
+# The schedule watches upstream: a new docker-openresty release is built, and
+# so is a release upstream has rebuilt under the same tag (a new base image):
+# each image records the digest it was built from
+# (org.opencontainers.image.base.digest) and is rebuilt when Docker Hub's
+# digest differs. latest and alpine are pushed last (the promote job), so the
+# package page shows the newest alpine first.
+#
 # This is the OpenResty sidecar (the Lua exporter under lib/ and vendor/),
 # unchanged by the native module. Flavors and platforms are read from Docker
 # Hub for each release, so a flavor upstream adds or drops shows up here
@@ -52,6 +59,8 @@ env:
   LATEST_FLAVOR: alpine
   # the flavors built when none are asked for
   DEFAULT_FLAVORS: alpine,bookworm
+  # the package page's description (no commas or equals signs: buildx --annotation)
+  IMAGE_DESCRIPTION: "docker-openresty with the Lua Prometheus exporter baked in - metrics on :9145/metrics. Same tags as openresty/openresty; latest and alpine are the newest release on Alpine."
 
 jobs:
   detect:
@@ -123,6 +132,7 @@ jobs:
               .results[]
               | select(.name | startswith($p))
               | { flavor: (.name | ltrimstr($p)),
+                  digest: (.digest // ""),
                   platforms: ([.images[]?
                                | select(.os == "linux" and .architecture != "unknown")
                                | "linux/\(.architecture)\(if (.variant // "") != "" then "/" + .variant else "" end)"]
@@ -144,10 +154,16 @@ jobs:
             if [ "$wanted" != ",," ] && [[ "$wanted" != *",$flavor,"* ]]; then
               continue
             fi
-            if [ "$GITHUB_EVENT_NAME" = "schedule" ] \
-               && docker buildx imagetools inspect "$IMAGE:$UPSTREAM_TAG-$flavor" > /dev/null 2>&1; then
-              echo "$IMAGE:$UPSTREAM_TAG-$flavor exists"
-              continue
+            # on the schedule: built already, from the same upstream image
+            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
+              digest=$(jq -r .digest <<< "$row")
+              have=$(docker buildx imagetools inspect --raw "$IMAGE:$UPSTREAM_TAG-$flavor" 2> /dev/null \
+                     | jq -r '.annotations["org.opencontainers.image.base.digest"] // ""' || true)
+              if [ -n "$have" ] && [ "$have" = "$digest" ]; then
+                echo "$IMAGE:$UPSTREAM_TAG-$flavor is up to date"
+                continue
+              fi
+              [ -n "$have" ] && echo "upstream $UPSTREAM_TAG-$flavor was rebuilt: $have -> $digest"
             fi
             echo "build $flavor ($(jq -r .platforms <<< "$row"))"
             selected+="$row"$'\n'
@@ -177,6 +193,7 @@ jobs:
       IS_NEWEST_IN_SERIES: ${{ needs.detect.outputs.is_newest_in_series }}
       FLAVOR: ${{ matrix.flavor }}
       PLATFORMS: ${{ matrix.platforms }}
+      BASE_DIGEST: ${{ matrix.digest }}
       GIT_SHA: ${{ github.sha }}
     steps:
       - uses: actions/checkout@v5
@@ -372,6 +389,12 @@ jobs:
 
           tag_args=()
           for t in "${tags[@]}"; do tag_args+=(-t "$IMAGE:$t"); done
+          tag_args+=(--annotation "index,manifest:org.opencontainers.image.description=$IMAGE_DESCRIPTION")
+          tag_args+=(--annotation "index,manifest:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY")
+          # what the schedule compares with Docker Hub to see an upstream rebuild
+          if [ -n "$BASE_DIGEST" ]; then
+            tag_args+=(--annotation "index,manifest:org.opencontainers.image.base.digest=$BASE_DIGEST")
+          fi
 
           docker buildx build \
             --build-arg BASE_IMAGE="$BASE_IMAGE" \
@@ -391,3 +414,34 @@ jobs:
             echo
             printf -- '- `%s`\n' "${tags[@]/#/$IMAGE:}"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # latest and alpine pushed last: the package page shows the newest alpine
+  # first, with its description
+  promote:
+    needs: [detect, build]
+    if: needs.build.result == 'success' && needs.detect.outputs.is_latest == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      UPSTREAM_TAG: ${{ needs.detect.outputs.upstream_tag }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/openresty"
+          src="$IMAGE:$UPSTREAM_TAG-$LATEST_FLAVOR"
+          if ! docker buildx imagetools inspect "$src" > /dev/null 2>&1; then
+            echo "::notice::no $src; nothing to promote"
+            exit 0
+          fi
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.description=$IMAGE_DESCRIPTION" \
+            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "index:org.opencontainers.image.version=$UPSTREAM_TAG-$LATEST_FLAVOR" \
+            -t "$IMAGE:latest" -t "$IMAGE:$LATEST_FLAVOR" "$src"
+          echo "- \`$IMAGE:latest\`, \`$IMAGE:$LATEST_FLAVOR\` = \`$UPSTREAM_TAG-$LATEST_FLAVOR\`" >> "$GITHUB_STEP_SUMMARY"
