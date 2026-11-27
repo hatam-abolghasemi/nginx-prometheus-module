@@ -13,6 +13,12 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+- **CI:** the sanitizer job on nginx 1.30 (the stable line) is green again.
+  nginx 1.30 core itself trips UBSan at startup (`memcpy(dst, NULL, 0)` in
+  `ngx_pstrdup`, fixed in 1.31), which stopped nginx before any test ran;
+  `nginx/tests/ubsan.supp` suppresses that one report. Nothing in it names
+  this module's code.
+
 ## v2.6.1 — 2026-11-27
 
 ### 2026-11-27

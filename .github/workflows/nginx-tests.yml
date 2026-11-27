@@ -91,7 +91,8 @@ jobs:
         env:
           # an nginx dynamic module trips the ODR check by design (ngx_module_names)
           ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:halt_on_error=1
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          # nginx core's own reports (nginx 1.30 at startup); none in this module
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:suppressions=${{ github.workspace }}/nginx/tests/ubsan.supp
         run: |
           for t in module source plug outbound intercept; do
             sh "nginx/tests/${t}_test.sh" "$RUNNER_TEMP/out/sbin/nginx" \
