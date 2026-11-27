@@ -6,7 +6,7 @@ in by sending its egress through the sidecar's forward proxy on
 `127.0.0.1:3128`; nothing else in it changes.
 
 Needs the [sidecar](sidecar.md) (on by default there), or the server
-below on your own nginx. **https interception**, coming in v2.4, builds on
+below on your own nginx. [**https interception**](interception.md) builds on
 this to see inside HTTPS calls.
 
 ---
@@ -27,7 +27,7 @@ nginx_http_requests_total{method="CONNECT",route="db.example.com:443",status="50
 - **HTTPS** is a `CONNECT` tunnel: you see *which host and port*, *how often*,
   *how long the tunnel lived* (duration) and whether it could be opened (`502`
   when the target refused or didn't answer). Method, route and status
-  *inside* the tunnel are encrypted; that's what interception will add.
+  *inside* the tunnel are encrypted; [interception](interception.md) decodes them.
 - With [caller identity](identity.md) on, `source_service` /
   `source_namespace` on outbound series are the pod itself.
 
@@ -110,8 +110,8 @@ curl -s localhost:9145/metrics | grep 'mode="1"'
 - Only clients that honour the proxy variables go through it. Something that
   connects directly (many database drivers, raw sockets) is invisible here;
   that's [stream](stream.md).
-- HTTPS is one series per destination and outcome, not per route, until
-  interception.
+- HTTPS is one series per destination and outcome, not per route, unless
+  [interception](interception.md) is on.
 - A CONNECT is logged when the tunnel closes: long-lived tunnels (WebSockets,
   HTTP/2 connections a client keeps open) show up late, with a long duration.
 - No authentication on the proxy; it only listens on `127.0.0.1`.

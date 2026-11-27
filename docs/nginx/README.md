@@ -23,7 +23,7 @@ the module (stock nginx, or the nginx image)
 │   ├── own identity     on with the sidecar; app / namespace labels
 │   ├── caller identity  image: POD_CIDR; own nginx: prometheus_source_ptr
 │   └── outbound         on with the sidecar; the app sets HTTP(S)_PROXY
-│       └── https interception   coming in v2.4; needs outbound
+│       └── https interception   image: INTERCEPT_TLS + a CA; nginx 1.31+
 └── stream (L4)          ngx_stream_prometheus_module.so; image: STREAM
 ```
 
@@ -33,11 +33,12 @@ the module (stock nginx, or the nginx image)
 | [sidecar](sidecar.md) | The image in front of your app on Kubernetes or Docker, nothing in the app changes | `APP_PORT` |
 | [caller identity](identity.md) | Which service and namespace called you (`source_service`, `source_namespace`), who this pod is (`app`, `namespace`), `client_subnet` | `POD_CIDR`, or the `prometheus_source_*` directives |
 | [outbound](outbound.md) | The calls your app makes: plain HTTP in full, HTTPS as `CONNECT host:port` (nginx 1.31+) | `HTTP(S)_PROXY=http://127.0.0.1:3128` on the app |
+| [https interception](interception.md) | Outbound HTTPS and gRPC with their real method, route and status, decrypted with your CA and sent on over verified TLS | `INTERCEPT_TLS=on` and a CA |
 | [stream](stream.md) | TCP and UDP sessions nginx proxies (Redis, databases, brokers): count, bytes, duration, connect time, by destination | the stream `.so` and a `stream{}` server, or `STREAM` in the image |
 
 Caller identity works on any nginx, the sidecar only makes it one variable.
 What [the Lua module](../openresty/README.md) has that this one doesn't yet:
-https interception, and caller identity on stream sessions.
+caller identity on stream sessions.
 
 ## Install
 
@@ -179,6 +180,7 @@ set per server or location.
 | `prometheus_record on\|off;` | `on` | http, server, location | Record requests here or not |
 | `prometheus_mode <value>;` | `0` | http, server, location | The `mode` label: `0` inbound, `1` outbound |
 | `prometheus;` | — | location | Serves the metrics (GET and HEAD) |
+| `prometheus_intercept_*` | — | | [https interception](interception.md#on-your-own-nginx) |
 
 In `stream{}` (the stream module, [stream](stream.md)):
 

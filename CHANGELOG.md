@@ -13,6 +13,31 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.4.0 — 2026-11-27
+
+### 2026-11-27
+
+- **https interception in the C module** (nginx 1.31+). Outbound HTTPS and
+  gRPC are recorded with their real method, route and status instead of
+  `CONNECT host:port`: `prometheus_intercept_connect` answers the CONNECT,
+  reads the tunnel's first bytes, and hands TLS to a terminator on `:3129`
+  (a certificate minted per name, signed by your CA) and plaintext HTTP/2 to
+  `:3130`; anything else is relayed as before. Decrypted requests go on to
+  their destination over TLS verified against the system trust store.
+  Guide: [docs/nginx/interception.md](docs/nginx/interception.md).
+- **Connections to destinations are kept per name**, not per address
+  (`prometheus_intercept_origin`): once warm, an intercepted request costs no
+  extra round trip, and a connection verified for one name is never used for
+  another on the same IP.
+- **gRPC:** an outbound gRPC call's `status` is `grpc_<code>` from
+  `grpc-status`, and its `route` is the method path as is, as in the Lua
+  module.
+- **Sidecar:** `INTERCEPT_TLS=on` with a CA mounted at `/etc/nginx/intercept/`
+  (`INTERCEPT_CA_CERT`, `INTERCEPT_CA_KEY`, `INTERCEPT_TRUSTED_CA`).
+- **Tests:** `nginx/tests/intercept_test.sh` in CI: decryption, reuse per
+  name, no reuse across names, unverified destinations, h2, h2c, relayed
+  tunnels.
+
 ## v2.3.1 — 2026-11-27
 
 ### 2026-11-27

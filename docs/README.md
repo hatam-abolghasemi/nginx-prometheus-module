@@ -13,7 +13,7 @@ with either, and so does the [dashboard](../grafana/).
 | Caller and own identity | ✓ | ✓ |
 | Outbound | ✓ (HTTPS on nginx 1.31+) | ✓ |
 | Stream (L4) | ✓ (caller identity not yet) | ✓ |
-| https interception | coming in v2.4 | ✓ |
+| https interception | ✓ (nginx 1.31+) | ✓ |
 | Status | where development is focused | maintained in parallel |
 
 ## The C module

@@ -113,6 +113,7 @@ metrics.
 | `POD_CIDR` | — | [Caller identity](identity.md): the pod ranges, space separated, e.g. `10.233.0.0/16` |
 | `CLUSTER_IP_PREFIX` | — | A `Host` that is an IP starting with this (e.g. `10.233.`) is labelled `kubernetes` |
 | `OUTBOUND` | on | `off`: no forward proxy on `127.0.0.1:3128` |
+| `INTERCEPT_TLS` | `off` | [https interception](interception.md): `on` with a CA at `/etc/nginx/intercept/` |
 | `STREAM` | — | [Stream](stream.md): `<name>:<local port>:<host>:<port>` entries, space separated |
 
 Anything else is plain nginx: mount more `.conf` files into

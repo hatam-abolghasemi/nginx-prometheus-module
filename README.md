@@ -142,6 +142,7 @@ the module
 │   ├── own identity     on with the sidecar: app / namespace
 │   ├── caller identity  POD_CIDR: source_service / source_namespace
 │   └── outbound         on with the sidecar; the app sets HTTP(S)_PROXY
+│       └── https interception  INTERCEPT_TLS + your CA: real routes inside HTTPS and gRPC
 └── stream (L4)          the stream .so; image: STREAM
 ```
 
@@ -151,6 +152,7 @@ the module
 | [sidecar](docs/nginx/sidecar.md) | The image in front of your app with `APP_PORT`; nothing in the app changes |
 | [caller identity](docs/nginx/identity.md) | Which Service and namespace called you, and who this pod is |
 | [outbound](docs/nginx/outbound.md) | The calls your app makes, through `127.0.0.1:3128`: plain HTTP in full, HTTPS as `CONNECT host:port` |
+| [https interception](docs/nginx/interception.md) | Inside outbound HTTPS and gRPC: method, route, `grpc_<code>`, decrypted with your CA and sent on over verified TLS |
 | [stream](docs/nginx/stream.md) | Redis, databases, brokers: sessions, bytes, duration, connect time by destination |
 
 A Kubernetes example with all of it: [`examples/nginx-sidecar/`](examples/nginx-sidecar/).
@@ -172,7 +174,7 @@ queries carry over:
 | Setup | `load_module` | the image, or the Lua files in your OpenResty |
 | Inbound, sidecar, caller identity, outbound | ✓ | ✓ |
 | Stream (L4) | ✓, on `:9145` | ✓, on `:9254`, with caller identity |
-| Decrypted outbound HTTPS and gRPC | coming in v2.4 | ✓ ([https interception](docs/openresty/https-interception.md)) |
+| Decrypted outbound HTTPS and gRPC | ✓, nginx 1.31+ ([interception](docs/nginx/interception.md)) | ✓ ([https interception](docs/openresty/https-interception.md)) |
 | Status | where development is focused | maintained in parallel |
 
 The Lua module runs as an OpenResty sidecar; try it with Prometheus and Grafana
