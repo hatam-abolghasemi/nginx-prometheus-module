@@ -112,7 +112,7 @@ cat <<NOTE
 
 ## Module
 
-${package_note}The \`.so\` files attached to this release are built from this tag for the newest mainline and stable nginx, glibc and musl, amd64 and arm64. A module loads only into the nginx version it was built for: check \`nginx -V\`, copy the file into \`modules/\`, and add \`load_module modules/ngx_http_prometheus_module.so;\` at the top of \`nginx.conf\`. That line is the whole setup: metrics are on \`:9145/metrics\`.$stream_note Any other nginx version: [build it from source]($repo/blob/$tag/$guide#from-source).
+${package_note}The \`.so\` files attached to this release are built from this tag for the newest nginx, glibc and musl, amd64 and arm64. A module loads only into the nginx version it was built for: check \`nginx -V\`, copy the file into \`modules/\`, and add \`load_module modules/ngx_http_prometheus_module.so;\` at the top of \`nginx.conf\`. That line is the whole setup: metrics are on \`:9145/metrics\`.$stream_note Any other nginx version: [build it from source]($repo/blob/$tag/$guide#from-source).
 
 ## Images
 

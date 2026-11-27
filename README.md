@@ -58,7 +58,7 @@ configuration is.
 
 ### 2. The nginx image
 
-The official `nginx` image with the module loaded, mainline and stable, Alpine
+The official `nginx` image with the module loaded: the newest nginx, Alpine
 and Debian, rebuilt whenever upstream releases. Swap the image name, keep the
 tag (`latest` and `alpine` are the newest mainline on Alpine):
 

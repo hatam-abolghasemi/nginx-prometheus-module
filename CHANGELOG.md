@@ -13,13 +13,29 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
-- **CI:** the sanitizer (ASan/UBSan) build runs on the newest mainline only;
-  the stable line keeps its regular build. nginx 1.30's own core trips UBSan
-  at startup (`memcpy(dst, NULL, 0)`, fixed in 1.31), so that job could never
-  test this module; `nginx/tests/ubsan.supp` is gone with it. The sidecar
-  test gets the sanitizer settings through `sudo` by name: the runner's
-  `sudo` no longer keeps the environment with `-E`, which made both
-  sanitizer jobs fail.
+## v2.8.0 — 2026-11-27
+
+### 2026-11-27
+
+- **One version of each, always the newest.** nginx: the newest nginx
+  release, Debian and Alpine. OpenResty: the newest docker-openresty
+  release, Alpine and Debian (bookworm); it can be behind nginx, as each
+  follows its own upstream. CI tests that one nginx, in a regular build and
+  under ASan/UBSan, and the release `.so` files are built for it.
+- **Upgrading: the nginx stable line is gone.** `stable` and `stable-alpine`
+  (image and module package) are no longer built and are listed as
+  deprecated; `.github/scripts/prune-images.sh` removes them. Use `alpine` /
+  `latest`, or pin a version. Older exact versions stay pullable.
+- **`watch-upstream.yml`:** every 6 hours, one job compares upstream's newest
+  version and digests with ours and starts the nginx or OpenResty build only
+  when something changed. The image workflows no longer run on a schedule, so
+  their runs have no skipped jobs, and the release `.so` files are attached
+  by the build itself (no separate `assets` job).
+- **CI:** the nginx image's smoke test of https interception could never
+  pass: its throwaway CA was in a `0700` directory the curl container
+  can't read. The sidecar test gets the sanitizer settings through `sudo` by
+  name (the runner's `sudo` ignores `-E`). nginx 1.30's own UBSan report and
+  `nginx/tests/ubsan.supp` are gone with the stable line.
 
 ## v2.7.0 — 2026-11-27
 

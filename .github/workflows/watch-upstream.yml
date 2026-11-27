@@ -1,0 +1,115 @@
+name: Watch upstream
+
+# Every 6 hours: is there anything upstream that our images don't have yet?
+#
+#   nginx      the newest nginx on Docker Hub, Debian (the plain tag) and Alpine
+#   OpenResty  the newest docker-openresty release on Docker Hub, Alpine and
+#              Debian (bookworm)
+#
+# A new version, or an upstream image rebuilt under the same tag (a new
+# Debian or Alpine base: a new digest), starts nginx-image.yml or
+# openresty-image.yml. Each of our images records the upstream digest it was
+# built from (org.opencontainers.image.base.digest); that is what is compared.
+# Nothing changed: nothing starts. A build already queued or running is left
+# to finish.
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+  actions: write
+
+concurrency:
+  group: watch-upstream
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compare and start what's behind
+        run: |
+          set -euo pipefail
+          OWNER="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+
+          # the newest of the git tags ($2, newest last) that Docker Hub has
+          # "<tag><suffix>" for, in <namespace>/<repository> $1
+          newest_on_hub() {
+            for t in $(printf '%s\n' "$2" | sort -rV | head -n 5); do
+              if curl -fsS -o /dev/null --retry 3 \
+                   "https://hub.docker.com/v2/namespaces/${1%%/*}/repositories/${1#*/}/tags/$t$3"; then
+                echo "$t"; return 0
+              fi
+            done
+            return 1
+          }
+
+          hub_digest() {
+            curl -fsS --retry 3 \
+              "https://hub.docker.com/v2/namespaces/${1%%/*}/repositories/${1#*/}/tags/$2" \
+              | jq -r '.digest // ""'
+          }
+
+          ours() {
+            docker buildx imagetools inspect --raw "$1" 2> /dev/null \
+              | jq -r '.annotations["org.opencontainers.image.base.digest"] // ""' || true
+          }
+
+          # $1 workflow, $2 upstream repo, $3 our image, $4 the version, then
+          # the tags to compare
+          check() {
+            local workflow=$1 upstream=$2 image=$3 version=$4 behind=""
+            shift 4
+            for tag in "$@"; do
+              theirs=$(hub_digest "$upstream" "$tag")
+              mine=$(ours "$image:$tag")
+              if [ -z "$mine" ]; then
+                behind+=" $tag (not built)"
+              elif [ "$mine" != "$theirs" ]; then
+                behind+=" $tag (rebuilt upstream)"
+              fi
+            done
+
+            if [ -z "$behind" ]; then
+              echo "$image: up to date with $upstream $version" | tee -a "$GITHUB_STEP_SUMMARY"
+              return 0
+            fi
+
+            if [ -n "$(gh run list --workflow "$workflow" --json status \
+                        -q '.[] | select(.status == "queued" or .status == "in_progress" or .status == "waiting") | .status' \
+                        --limit 20)" ]; then
+              echo "$image: behind ($behind ), a build is already running" | tee -a "$GITHUB_STEP_SUMMARY"
+              return 0
+            fi
+
+            gh workflow run "$workflow" --ref "${GITHUB_REF_NAME:-main}"
+            echo "$image: behind ($behind ): started $workflow" | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+
+          # nginx: the newest release that is on Docker Hub
+          nginx_all=$(git ls-remote --tags --refs https://github.com/nginx/nginx.git \
+            | awk -F/ '{print $3}' \
+            | sed -n 's/^release-\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' | sort -V)
+          nginx=$(newest_on_hub library/nginx "$nginx_all" "")
+          check nginx-image.yml library/nginx "$OWNER/nginx" "$nginx" "$nginx" "$nginx-alpine"
+
+          # OpenResty: the newest docker-openresty release that is on Docker Hub
+          resty_all=$(git ls-remote --tags --refs https://github.com/openresty/docker-openresty.git \
+            | awk -F/ '{print $3}' \
+            | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' | sort -V)
+          resty=$(newest_on_hub openresty/openresty "$resty_all" "-alpine")
+          check openresty-image.yml openresty/openresty "$OWNER/openresty" "$resty" "$resty-alpine" "$resty-bookworm"

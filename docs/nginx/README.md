@@ -56,8 +56,7 @@ RUN sed -i '1i load_module modules/ngx_http_prometheus_module.so;' /etc/nginx/ng
 
 Add `load_module modules/ngx_stream_prometheus_module.so;` the same way for
 [stream](stream.md). The tag must be your nginx's exact version, and
-`-alpine` for an Alpine base; `mainline[-alpine]` and `stable[-alpine]` follow
-the newest of each. Its files, to install on a host:
+`-alpine` for an Alpine base; `mainline[-alpine]` follows the newest. Its files, to install on a host:
 
 ```bash
 docker create --name prom-module ghcr.io/hatam-abolghasemi/nginx-prometheus-module:1.31.10 none
@@ -87,7 +86,7 @@ you replace `nginx.conf`, keep the `load_module` lines. Tags:
 ### A prebuilt `.so`
 
 Each [release](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases)
-has both modules built for the newest mainline and stable nginx:
+has both modules built for the newest nginx:
 
 ```
 ngx_http_prometheus_module-<release>-nginx-<nginx-version>-linux-<amd64|arm64>-<glibc|musl>.so

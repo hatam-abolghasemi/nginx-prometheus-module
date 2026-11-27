@@ -35,8 +35,9 @@ An IP target is shown as `$ip` (or `kubernetes` under
 `prometheus_cluster_ip_prefix`) in both `host` and the CONNECT route, so one
 series per address never happens.
 
-**HTTPS needs nginx 1.31 or later** (its tunnel module, built in). On the
-stable line, outbound records plain HTTP only, and the sidecar's log says so.
+**HTTPS needs nginx 1.31 or later** (its tunnel module, built in): the image
+always has it. On your own older nginx, outbound records plain HTTP only, and
+the sidecar's log says so.
 
 ---
 

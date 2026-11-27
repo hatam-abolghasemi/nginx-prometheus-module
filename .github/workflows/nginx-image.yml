@@ -1,40 +1,31 @@
 name: nginx image
 
-# Rebuilds the official nginx image with the module loaded: for the newest
-# mainline and the newest stable nginx, the main flavors (DEFAULT_FLAVORS:
-# the debian default and alpine), on the same platforms, under the same tags --
+# Rebuilds the official nginx image with the module loaded, for one nginx:
+# the newest release on Docker Hub, in the main flavors (DEFAULT_FLAVORS: the
+# Debian default and Alpine), on the same platforms, under the same tags --
 # only the image name differs.
 #
 #   nginx:<tag>
 #   ghcr.io/<owner>/nginx:<tag>
-#
-# Any other flavor is one docker build away (docs/images.md#any-other-flavor),
-# or dispatch this workflow with flavors=perl,otel (or "all"). Platforms are
-# read from Docker Hub for each version.
 #
 # Each build also pushes the module alone, the two .so files in an empty
 # image, to ghcr.io/<owner>/nginx-prometheus-module under the same tags:
 #
 #   COPY --from=ghcr.io/<owner>/nginx-prometheus-module:<tag> / /usr/lib/nginx/modules/
 #
-# The schedule watches upstream: a new nginx version is built, and so is a
-# version upstream has rebuilt (a new Debian or Alpine base under the same
-# tag): each image records the digest of the upstream image it was built from
-# (org.opencontainers.image.base.digest) and is rebuilt when Docker Hub's
-# digest for that tag differs.
+# and attaches the .so files (glibc from Debian, musl from Alpine; amd64 and
+# arm64) to the newest GitHub Release, built from that release's tag.
 #
-# `latest` and `alpine` are the newest mainline, alpine. The promote job
-# pushes them last, so the package pages show the newest alpine first.
-#
-# The `assets` job attaches prebuilt .so files (glibc and musl, amd64 and
-# arm64) for the same nginx versions to the newest GitHub Release, built from
-# that release's tag. release.yml dispatches this workflow after a release so
-# its assets appear right away; the schedule adds them for nginx versions that
-# come out later. Failed runs are retried by retry.yml.
+# Runs on a push to the module, after a release (release.yml), and when
+# watch-upstream.yml sees a new nginx or an upstream image rebuilt under the
+# same tag (each image records the upstream digest it was built from,
+# org.opencontainers.image.base.digest). `latest` and `alpine` are the newest
+# on Alpine; the promote job pushes them last, so the package pages show them
+# first. Another version or flavor: dispatch with nginx_version / flavors, or
+# one docker build (docs/images.md#any-other-flavor). Failed runs are retried
+# by retry.yml.
 
 on:
-  schedule:
-    - cron: "41 */6 * * *"
   push:
     branches: [main]
     paths:
@@ -43,21 +34,13 @@ on:
   workflow_dispatch:
     inputs:
       nginx_version:
-        description: nginx version, e.g. 1.31.10 (empty = newest mainline and stable)
+        description: nginx version, e.g. 1.31.10 (empty = the newest)
         required: false
         default: ""
       flavors:
-        description: comma-separated flavors, "default" for the plain tag, "all" for every one (empty = the main ones)
+        description: comma-separated flavors, "default" for the plain tag, "all" for every one (empty = default,alpine)
         required: false
         default: ""
-      images:
-        description: build images
-        type: boolean
-        default: true
-      assets:
-        description: attach .so files to the newest release
-        type: boolean
-        default: true
 
 permissions:
   contents: read
@@ -70,9 +53,10 @@ concurrency:
 env:
   NGINX_REPO: https://github.com/nginx/nginx.git
   BASE_IMAGE: nginx
+  HUB_TAGS: https://hub.docker.com/v2/namespaces/library/repositories/nginx/tags
   # the package pages' descriptions
   # (no commas or equals signs: they go through buildx --annotation)
-  IMAGE_DESCRIPTION: "The official nginx image with the Prometheus module loaded - metrics on :9145/metrics. Same tags as nginx; latest and alpine are the newest mainline on Alpine."
+  IMAGE_DESCRIPTION: "The official nginx image with the Prometheus module loaded - metrics on :9145/metrics. Same tags as nginx; latest and alpine are the newest nginx on Alpine."
   MODULE_DESCRIPTION: "The Prometheus module for nginx as files only - ngx_http_prometheus_module.so and ngx_stream_prometheus_module.so for one nginx version and libc. Copy them into your own nginx image."
   # the flavors built when none are asked for; "default" is the plain tag
   DEFAULT_FLAVORS: default,alpine
@@ -81,10 +65,11 @@ jobs:
   detect:
     runs-on: ubuntu-latest
     outputs:
-      versions: ${{ steps.versions.outputs.versions }}
+      version: ${{ steps.version.outputs.version }}
+      newest: ${{ steps.version.outputs.newest }}
       matrix: ${{ steps.flavors.outputs.matrix }}
     steps:
-      - id: versions
+      - id: version
         env:
           REQUESTED: ${{ inputs.nginx_version }}
         run: |
@@ -93,114 +78,80 @@ jobs:
             | awk -F/ '{print $3}' \
             | sed -n 's/^release-\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' \
             | sort -V)
-          mainline=$(printf '%s\n' "$all" | tail -n1)
-          # stable lines have an even minor version
-          stable=$(printf '%s\n' "$all" | awk -F. '$2 % 2 == 0' | tail -n1)
 
-          # one row per version: version, series, channel
-          rows=""
-          if [ -n "$REQUESTED" ]; then
-            printf '%s\n' "$all" | grep -qx "$REQUESTED" \
-              || { echo "::error::nginx $REQUESTED is not a release"; exit 1; }
-            series=$(printf '%s' "$REQUESTED" | cut -d. -f1,2)
-            newest_in_series=$(printf '%s\n' "$all" | grep "^$series\." | tail -n1)
-            channel=""
-            [ "$REQUESTED" = "$mainline" ] && channel=mainline
-            [ "$REQUESTED" = "$stable" ] && channel=stable
-            rows=$(jq -nc --arg v "$REQUESTED" --arg s "$series" --arg c "$channel" \
-              --argjson n "$([ "$REQUESTED" = "$newest_in_series" ] && echo true || echo false)" \
-              '[{version: $v, series: $s, channel: $c, newest_in_series: $n}]')
-          else
-            rows=$(jq -nc --arg m "$mainline" --arg s "$stable" '
-              [{version: $m, series: ($m | split(".")[0:2] | join(".")), channel: "mainline", newest_in_series: true},
-               {version: $s, series: ($s | split(".")[0:2] | join(".")), channel: "stable", newest_in_series: true}]')
-          fi
-          echo "versions=$rows" >> "$GITHUB_OUTPUT"
-          echo "mainline $mainline, stable $stable"
-          echo "$rows" | jq .
+          # the newest release Docker Hub has an image for (a new nginx is
+          # tagged on GitHub a little before its image is out)
+          newest=""
+          for v in $(printf '%s\n' "$all" | sort -rV | head -n 5); do
+            if curl -fsS -o /dev/null --retry 3 "$HUB_TAGS/$v"; then newest=$v; break; fi
+          done
+          [ -n "$newest" ] || { echo "::error::no image on Docker Hub for any of the newest nginx releases"; exit 1; }
 
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          version="${REQUESTED:-$newest}"
+          printf '%s\n' "$all" | grep -qx "$version" \
+            || { echo "::error::nginx $version is not a release"; exit 1; }
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "newest=$([ "$version" = "$newest" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "nginx $version (the newest on Docker Hub: $newest)"
 
       - id: flavors
         env:
-          VERSIONS: ${{ steps.versions.outputs.versions }}
+          VERSION: ${{ steps.version.outputs.version }}
+          NEWEST: ${{ steps.version.outputs.newest }}
           REQUESTED_FLAVORS: ${{ inputs.flavors }}
         run: |
           set -euo pipefail
-          IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/nginx"
           wanted="${REQUESTED_FLAVORS// /}"
           wanted=",${wanted:-$DEFAULT_FLAVORS},"
           [ "$wanted" = ",all," ] && wanted=",,"
+          series=$(printf '%s' "$VERSION" | cut -d. -f1,2)
           selected=""
 
-          while IFS= read -r v; do
-            version=$(jq -r .version <<< "$v")
-            series=$(jq -r .series <<< "$v")
-            channel=$(jq -r .channel <<< "$v")
-            newest_in_series=$(jq -r .newest_in_series <<< "$v")
+          # Every Docker Hub tag "<version>" or "<version>-<flavor>" with its
+          # digest and linux platforms. Windows-only tags have no linux platform.
+          url="$HUB_TAGS?page_size=100&name=$VERSION"
+          while [ -n "$url" ]; do
+            page=$(curl -fsSL --retry 3 "$url")
+            while IFS= read -r row; do
+              [ -n "$row" ] || continue
+              flavor=$(jq -r .flavor <<< "$row")
+              key=${flavor:-default}
+              if [ "$wanted" != ",," ] && [[ "$wanted" != *",$key,"* ]]; then
+                continue
+              fi
+              s=${flavor:+-$flavor}
+              tags=("$VERSION$s")
+              if [ "$NEWEST" = "true" ]; then
+                tags+=("$series$s" "mainline$s")
+                # latest and alpine: the newest nginx, Alpine
+                [ "$flavor" = "alpine" ] && tags+=("alpine" "latest")
+              fi
+              echo "build $VERSION$s ($(jq -r .platforms <<< "$row"))"
+              selected+=$(jq -c --arg v "$VERSION" --arg t "$(IFS=,; echo "${tags[*]}")" \
+                '. + {version: $v, nginx_tag: ($v + (if .flavor == "" then "" else "-" + .flavor end)), tags: $t}' <<< "$row")$'\n'
+            done < <(jq -c --arg v "$VERSION" '
+              .results[]
+              | select(.name == $v or (.name | startswith($v + "-")))
+              | { flavor: (if .name == $v then "" else (.name | ltrimstr($v + "-")) end),
+                  digest: (.digest // ""),
+                  platforms: ([.images[]?
+                               | select(.os == "linux" and .architecture != "unknown")
+                               | "linux/\(.architecture)\(if (.variant // "") != "" then "/" + .variant else "" end)"]
+                              | unique | join(",")) }
+              | select(.platforms != "")' <<< "$page")
+            url=$(jq -r '.next // ""' <<< "$page")
+          done
 
-            # Every Docker Hub tag "<version>" or "<version>-<flavor>" with its
-            # linux platforms. Windows-only tags have no linux platform.
-            url="https://hub.docker.com/v2/namespaces/library/repositories/nginx/tags?page_size=100&name=${version}"
-            while [ -n "$url" ]; do
-              page=$(curl -fsSL --retry 3 "$url")
-              while IFS= read -r row; do
-                [ -n "$row" ] || continue
-                flavor=$(jq -r .flavor <<< "$row")
-                key=${flavor:-default}
-                if [ "$wanted" != ",," ] && [[ "$wanted" != *",$key,"* ]]; then
-                  continue
-                fi
-                s=${flavor:+-$flavor}
-                tags=("$version$s")
-                [ "$newest_in_series" = "true" ] && tags+=("$series$s")
-                if [ "$channel" = "mainline" ]; then
-                  tags+=("mainline$s")
-                  # latest and alpine: the newest mainline, alpine
-                  [ "$flavor" = "alpine" ] && tags+=("alpine" "latest")
-                elif [ "$channel" = "stable" ]; then
-                  tags+=("stable$s")
-                fi
-                # on the schedule: built already, from the same upstream image
-                digest=$(jq -r .digest <<< "$row")
-                if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-                  have=$(docker buildx imagetools inspect --raw "$IMAGE:$version$s" 2> /dev/null \
-                         | jq -r '.annotations["org.opencontainers.image.base.digest"] // ""' || true)
-                  if [ -n "$have" ] && [ "$have" = "$digest" ]; then
-                    echo "$IMAGE:$version$s is up to date"
-                    continue
-                  fi
-                  [ -n "$have" ] && echo "upstream nginx:$version$s was rebuilt: $have -> $digest"
-                fi
-                echo "build $version$s ($(jq -r .platforms <<< "$row"))"
-                selected+=$(jq -c --arg v "$version" --arg t "$(IFS=,; echo "${tags[*]}")" \
-                  '. + {version: $v, nginx_tag: ($v + (if .flavor == "" then "" else "-" + .flavor end)), tags: $t}' <<< "$row")$'\n'
-              done < <(jq -c --arg v "$version" '
-                .results[]
-                | select(.name == $v or (.name | startswith($v + "-")))
-                | { flavor: (if .name == $v then "" else (.name | ltrimstr($v + "-")) end),
-                    digest: (.digest // ""),
-                    platforms: ([.images[]?
-                                 | select(.os == "linux" and .architecture != "unknown")
-                                 | "linux/\(.architecture)\(if (.variant // "") != "" then "/" + .variant else "" end)"]
-                                | unique | join(",")) }
-                | select(.platforms != "")' <<< "$page")
-              url=$(jq -r '.next // ""' <<< "$page")
-            done
-          done < <(jq -c '.[]' <<< "$VERSIONS")
-
+          [ -n "$selected" ] || { echo "::error::no $BASE_IMAGE:$VERSION image in the flavors $wanted"; exit 1; }
           echo "matrix=$(printf '%s' "$selected" | jq -sc '{include: .}')" >> "$GITHUB_OUTPUT"
 
   build:
     needs: detect
-    if: >-
-      (github.event_name != 'workflow_dispatch' || inputs.images)
-      && fromJSON(needs.detect.outputs.matrix).include[0] != null
     runs-on: ubuntu-latest
+    permissions:
+      contents: write         # the .so files on the release
+      packages: write
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -306,9 +257,12 @@ jobs:
           # example.com decrypted and sent on over verified TLS
           if $tunnel; then
             ca=$(mktemp -d)
+            # the curl container doesn't run as root: the directory and the
+            # certificate must be readable to it (mktemp -d is 0700)
+            chmod 755 "$ca"
             openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 \
               -subj /CN=smoke-ca -keyout "$ca/ca.key" -out "$ca/ca.crt" 2> /dev/null
-            chmod 644 "$ca/ca.key"
+            chmod 644 "$ca/ca.key" "$ca/ca.crt"
             docker run -d --name smoke-app2 busybox sh -c 'httpd -f -p 8080 -h /tmp'
             docker run -d --name smoke-intercept --network container:smoke-app2 -e APP_PORT=8080 \
               -e INTERCEPT_TLS=on -v "$ca:/etc/nginx/intercept:ro" nginx-prometheus:smoke
@@ -360,7 +314,7 @@ jobs:
             --label org.opencontainers.image.base.name="docker.io/library/$BASE_IMAGE:$NGINX_TAG"
             --annotation "index,manifest:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY"
           )
-          # what the schedule compares with Docker Hub to see an upstream rebuild
+          # what watch-upstream.yml compares with Docker Hub to see an upstream rebuild
           if [ -n "$BASE_DIGEST" ]; then
             meta+=(--annotation "index,manifest:org.opencontainers.image.base.digest=$BASE_DIGEST")
           fi
@@ -383,15 +337,66 @@ jobs:
             printf -- '- `%s`\n' "${tags[@]/#/$IMAGE:}" "${tags[@]/#/$MODULE:}"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Attach the .so files to the newest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ matrix.version }}
+          FLAVOR: ${{ matrix.flavor }}
+        run: |
+          set -euo pipefail
+          # glibc from the Debian default, musl from Alpine; other flavors have none
+          case $FLAVOR in
+            "")     libc=glibc ;;
+            alpine) libc=musl ;;
+            *)      echo "$NGINX_TAG: no release files for this flavor"; exit 0 ;;
+          esac
+          tag=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName 2> /dev/null || true)
+          if [ -z "$tag" ]; then
+            echo "no release yet: nothing to attach"; exit 0
+          fi
+
+          # built from the release's own tag, whatever main is now
+          git fetch --depth 1 origin "refs/tags/$tag:refs/tags/$tag"
+          git worktree add "$RUNNER_TEMP/release" "$tag"
+          platforms=""
+          for arch in amd64 arm64; do
+            # arm64 is listed as linux/arm64/v8
+            if [[ ",$PLATFORMS," == *",linux/$arch,"* || ",$PLATFORMS," == *",linux/$arch/"* ]]; then
+              platforms+="${platforms:+,}linux/$arch"
+            fi
+          done
+          docker buildx build \
+            --build-arg BASE_IMAGE="$BASE_IMAGE" \
+            --build-arg NGINX_TAG="$NGINX_TAG" \
+            --platform "$platforms" \
+            -f "$RUNNER_TEMP/release/nginx/docker/Dockerfile" --target module \
+            --output "type=local,dest=$RUNNER_TEMP/so" "$RUNNER_TEMP/release/nginx"
+
+          files=()
+          for arch in amd64 arm64; do
+            [[ ",$platforms," == *",linux/$arch,"* ]] || continue
+            for m in http stream; do
+              src="$RUNNER_TEMP/so/linux_$arch/ngx_${m}_prometheus_module.so"
+              # a single platform is written to dest itself
+              [ -f "$src" ] || src="$RUNNER_TEMP/so/ngx_${m}_prometheus_module.so"
+              f="ngx_${m}_prometheus_module-$tag-nginx-$VERSION-linux-$arch-$libc.so"
+              cp "$src" "$f"
+              sha256sum "$f" > "$f.sha256"
+              files+=("$f" "$f.sha256")
+            done
+          done
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
+          printf -- '- `%s`\n' "${files[@]}" >> "$GITHUB_STEP_SUMMARY"
+
   # latest and alpine pushed last: the package pages show the newest alpine
   # first, with its description
   promote:
     needs: [detect, build]
-    if: needs.build.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      VERSIONS: ${{ needs.detect.outputs.versions }}
+      VERSION: ${{ needs.detect.outputs.version }}
+      NEWEST: ${{ needs.detect.outputs.newest }}
     steps:
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -402,8 +407,10 @@ jobs:
       - run: |
           set -euo pipefail
           OWNER="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-          mainline=$(jq -r '.[] | select(.channel == "mainline") | .version' <<< "$VERSIONS")
-          [ -n "$mainline" ] || { echo "no mainline in this run"; exit 0; }
+          if [ "$NEWEST" != "true" ]; then
+            echo "nginx $VERSION is not the newest: latest stays where it is"; exit 0
+          fi
+          mainline=$VERSION
 
           promote() {
             if ! docker buildx imagetools inspect "$1:$mainline-alpine" > /dev/null 2>&1; then
@@ -420,85 +427,3 @@ jobs:
 
           promote "$OWNER/nginx-prometheus-module" "$MODULE_DESCRIPTION"
           promote "$OWNER/nginx" "$IMAGE_DESCRIPTION"
-
-  assets:
-    needs: detect
-    if: >-
-      github.event_name == 'schedule'
-      || (github.event_name == 'workflow_dispatch' && inputs.assets)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.detect.outputs.versions) }}
-    name: assets (nginx ${{ matrix.version }})
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ matrix.version }}
-    steps:
-      - id: release
-        run: |
-          set -euo pipefail
-          tag=$(gh release view -R "$GITHUB_REPOSITORY" --json tagName -q .tagName 2>/dev/null || true)
-          if [ -z "$tag" ]; then
-            echo "::notice::no release yet; nothing to attach"
-            echo "tag=" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          have=$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
-          missing=false
-          for libc in glibc musl; do
-            for arch in amd64 arm64; do
-              for m in http stream; do
-                f="ngx_${m}_prometheus_module-$tag-nginx-$VERSION-linux-$arch-$libc.so"
-                printf '%s\n' "$have" | grep -qx "$f" || missing=true
-              done
-            done
-          done
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "missing=$missing" >> "$GITHUB_OUTPUT"
-          echo "release $tag, nginx $VERSION assets missing: $missing"
-
-      - if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ steps.release.outputs.tag }}
-
-      - if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
-        uses: docker/setup-qemu-action@v3
-      - if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and attach
-        if: steps.release.outputs.tag != '' && steps.release.outputs.missing == 'true'
-        env:
-          TAG: ${{ steps.release.outputs.tag }}
-        run: |
-          set -euo pipefail
-          files=()
-          # glibc from the debian flavor, musl from alpine
-          for libc in glibc musl; do
-            base="$VERSION"
-            [ "$libc" = musl ] && base="$VERSION-alpine"
-            docker buildx build \
-              --build-arg BASE_IMAGE="$BASE_IMAGE" \
-              --build-arg NGINX_TAG="$base" \
-              --platform linux/amd64,linux/arm64 \
-              -f nginx/docker/Dockerfile \
-              --target module \
-              --output "type=local,dest=out/$libc" nginx
-            for arch in amd64 arm64; do
-              for m in http stream; do
-                # releases before v2.3.0 have no stream module
-                [ -f "out/$libc/linux_$arch/ngx_${m}_prometheus_module.so" ] || continue
-                f="ngx_${m}_prometheus_module-$TAG-nginx-$VERSION-linux-$arch-$libc.so"
-                cp "out/$libc/linux_$arch/ngx_${m}_prometheus_module.so" "$f"
-                sha256sum "$f" > "$f.sha256"
-                files+=("$f" "$f.sha256")
-              done
-            done
-          done
-          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"
-          printf -- '- `%s`\n' "${files[@]}" >> "$GITHUB_STEP_SUMMARY"

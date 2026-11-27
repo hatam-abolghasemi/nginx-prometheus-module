@@ -8,7 +8,7 @@ with either, and so does the [dashboard](../grafana/).
 |---|---|---|
 | Runs on | stock nginx (any version, `--with-compat`) | OpenResty, or nginx with `lua-nginx-module` |
 | Setup | `load_module`; metrics on `:9145` | the image, or the Lua files in your OpenResty |
-| Image | [`…/nginx`](images.md#nginx), nginx mainline and stable, debian and alpine | [`…/openresty`](images.md#openresty), every docker-openresty release, alpine and bookworm |
+| Image | [`…/nginx`](images.md#nginx), the newest nginx, Alpine and Debian | [`…/openresty`](images.md#openresty), the newest docker-openresty release, Alpine and Debian (bookworm) |
 | Inbound, sidecar | ✓ | ✓ |
 | Caller and own identity | ✓ | ✓ |
 | Outbound | ✓ (HTTPS on nginx 1.31+) | ✓ |

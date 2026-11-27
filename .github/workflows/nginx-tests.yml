@@ -1,9 +1,9 @@
 name: nginx tests
 
 # The C module (nginx/): the label and identity code on their own, then the
-# module in a real nginx: the newest mainline and stable in a regular build,
-# and the newest mainline again under AddressSanitizer and UBSan (memory and
-# undefined-behaviour checks; the stable line's own core trips them). nginx/tests/module_test.sh checks the
+# module in a real nginx, the newest release (the one the images and release
+# files are built for), in a regular build and under AddressSanitizer and
+# UBSan (memory and undefined-behaviour checks). nginx/tests/module_test.sh checks the
 # exposition with promtool.
 on:
   push:
@@ -23,8 +23,7 @@ jobs:
   versions:
     runs-on: ubuntu-latest
     outputs:
-      list: ${{ steps.v.outputs.list }}
-      mainline: ${{ steps.v.outputs.mainline }}
+      newest: ${{ steps.v.outputs.newest }}
     steps:
       - id: v
         run: |
@@ -32,10 +31,7 @@ jobs:
           all=$(git ls-remote --tags --refs https://github.com/nginx/nginx.git \
             | awk -F/ '{print $3}' \
             | sed -n 's/^release-\([0-9]*\.[0-9]*\.[0-9]*\)$/\1/p' | sort -V)
-          mainline=$(printf '%s\n' "$all" | tail -n1)
-          stable=$(printf '%s\n' "$all" | awk -F. '$2 % 2 == 0' | tail -n1)
-          echo "list=$(jq -nc --arg m "$mainline" --arg s "$stable" '[$m, $s] | unique')" >> "$GITHUB_OUTPUT"
-          echo "mainline=$mainline" >> "$GITHUB_OUTPUT"
+          echo "newest=$(printf '%s\n' "$all" | tail -n1)" >> "$GITHUB_OUTPUT"
 
   label:
     runs-on: ubuntu-latest
@@ -58,12 +54,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ${{ fromJSON(needs.versions.outputs.list) }}
-        sanitize: [false]
-        # the sanitizers on the newest mainline only
-        include:
-          - version: ${{ needs.versions.outputs.mainline }}
-            sanitize: true
+        version: ["${{ needs.versions.outputs.newest }}"]
+        sanitize: [false, true]
     name: nginx ${{ matrix.version }}${{ matrix.sanitize && ' (asan)' || '' }}
     steps:
       - uses: actions/checkout@v5

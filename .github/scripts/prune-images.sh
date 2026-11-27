@@ -5,7 +5,9 @@
 #     (until v2.3.0) and openresty-prometheus-exporter (v1.x), whole packages;
 #   - old flavor tags of the current images, no longer built since v2.3.1:
 #     nginx tags other than default and alpine (perl, otel, alpine-slim, ...),
-#     openresty tags other than alpine and bookworm (noble, rocky, ...).
+#     openresty tags other than alpine and bookworm (noble, rocky, ...);
+#   - the nginx stable line, no longer built since v2.8.0: the versions tagged
+#     stable / stable-alpine, in the image and in the module package.
 #
 # A package version is deleted only if it has tags and every one of them is
 # deprecated. Untagged versions are never touched: they are the per-platform
@@ -27,7 +29,7 @@ DELETE=false
 OLD_PACKAGES="nginx-prometheus-module/nginx nginx-prometheus-module/openresty openresty-prometheus-exporter"
 
 # tags that stay, per current image (extended regular expressions)
-KEEP_nginx='^(latest|alpine|mainline|stable|mainline-alpine|stable-alpine|[0-9]+\.[0-9]+(\.[0-9]+)?|[0-9]+\.[0-9]+(\.[0-9]+)?-alpine)$'
+KEEP_nginx='^(latest|alpine|mainline|mainline-alpine|[0-9]+\.[0-9]+(\.[0-9]+)?|[0-9]+\.[0-9]+(\.[0-9]+)?-alpine)$'
 KEEP_openresty='^(latest|alpine|bookworm|.*-alpine|.*-bookworm)$'
 
 enc() { printf '%s' "$1" | sed 's#/#%2F#g'; }
@@ -46,19 +48,24 @@ for pkg in $OLD_PACKAGES; do
     fi
 done
 
-for image in nginx openresty; do
-    eval "keep=\$KEEP_$image"
+for image in nginx nginx-prometheus-module openresty; do
+    case $image in nginx-prometheus-module) keep=$KEEP_nginx ;; *) eval "keep=\$KEEP_$image" ;; esac
     api --paginate "/$OWNER_TYPE/$OWNER/packages/container/$image/versions?per_page=100" \
         --jq '.[] | select((.metadata.container.tags | length) > 0)
                   | [(.id | tostring), (.metadata.container.tags | join(","))] | @tsv' \
     | while IFS="$(printf '\t')" read -r id tags; do
         stays=false
-        for t in $(echo "$tags" | tr ',' ' '); do
-            if echo "$t" | grep -Eq "$keep"; then stays=true; break; fi
-        done
+        why="old flavor"
+        if echo ",$tags," | grep -Eq ',stable(-alpine)?,'; then
+            why="stable line"
+        else
+            for t in $(echo "$tags" | tr ',' ' '); do
+                if echo "$t" | grep -Eq "$keep"; then stays=true; break; fi
+            done
+        fi
         $stays && continue
 
-        echo "version  ghcr.io/$OWNER/$image  $tags  (old flavor)"
+        echo "version  ghcr.io/$OWNER/$image  $tags  ($why)"
         if $DELETE; then
             api -X DELETE "/$OWNER_TYPE/$OWNER/packages/container/$image/versions/$id"
             echo "         deleted"

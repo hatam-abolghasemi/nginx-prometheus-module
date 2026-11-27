@@ -39,8 +39,7 @@ spec:
 
       - name: nginx
         # pin a tag from docs/images.md, e.g. <nginx-version>-alpine
-        # mainline (1.31+) for HTTPS through outbound; stable is plain HTTP only
-        image: ghcr.io/hatam-abolghasemi/nginx:mainline-alpine
+        image: ghcr.io/hatam-abolghasemi/nginx:alpine
         env:
         - { name: APP_PORT, value: "8080" }
         - { name: POD_CIDR, value: "10.233.0.0/16" }     # your cluster's pod range

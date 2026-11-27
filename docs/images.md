@@ -13,8 +13,15 @@ swap the image name, keep the tag. Any other flavor is
 
 The package pages list every tag and digest, newest Alpine first.
 
-**They follow upstream.** Every 6 hours each workflow looks at upstream: a new
-nginx mainline or stable, a new docker-openresty release, or a tag upstream
+**One version of each, always the newest.** nginx: the newest nginx release,
+Debian (the plain tag) and Alpine. OpenResty: the newest docker-openresty
+release, Alpine and Debian (bookworm); it can be a little behind nginx, as
+each follows its own upstream. Older exact versions stay pullable for pinning
+but aren't rebuilt.
+
+**They follow upstream.** Every 6 hours
+[`watch-upstream.yml`](../.github/workflows/watch-upstream.yml) looks at
+upstream: a new nginx, a new docker-openresty release, or a tag upstream
 has rebuilt on a newer Debian or Alpine base (a new digest under the same
 tag) is built, smoke-tested and pushed. Each image records the upstream
 digest it was built from (`org.opencontainers.image.base.digest`), so a
@@ -38,30 +45,28 @@ More, and on a host: [install](nginx/README.md#install).
 
 ## nginx
 
-The newest mainline and the newest stable nginx, in the default (debian) and
-`alpine` flavors, on every platform upstream publishes them for:
+The newest nginx, in the default (Debian) and `alpine` flavors, on every
+platform upstream publishes them for:
 
 | Tag | Meaning |
 |---|---|
 | `<version>`, `<version>-alpine` | that nginx version |
 | `<series>[-alpine]`, e.g. `1.31-alpine` | newest version in that series |
-| `latest`, `alpine`, `mainline-alpine` | newest mainline, Alpine |
-| `mainline` | newest mainline, Debian |
-| `stable[-alpine]` | newest stable |
+| `latest`, `alpine`, `mainline-alpine` | the newest, Alpine |
+| `mainline` | the newest, Debian |
 
 One difference from upstream: `latest` is Alpine here (upstream's is Debian),
 the same as in the OpenResty image. For Debian, use `mainline` or a version.
 
 ```bash
 docker pull ghcr.io/hatam-abolghasemi/nginx:alpine
-docker pull ghcr.io/hatam-abolghasemi/nginx:stable-alpine
 docker pull ghcr.io/hatam-abolghasemi/nginx:1.31.10       # Debian
 ```
 
 ## openresty
 
-Every [docker-openresty](https://github.com/openresty/docker-openresty)
-release, in the `alpine` and `bookworm` flavors:
+The newest [docker-openresty](https://github.com/openresty/docker-openresty)
+release, in the `alpine` and `bookworm` (Debian) flavors:
 
 | Tag | Meaning |
 |---|---|
@@ -109,6 +114,7 @@ after it: that one is [the module](#the-module), current.
 | `ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter` | v1.x | `ghcr.io/hatam-abolghasemi/openresty` |
 | nginx flavor tags other than default and `alpine` (`perl`, `otel`, `alpine-slim`, `trixie`, ...) | v2.3.0 | the default or `alpine` tag, or one `docker build` |
 | openresty flavor tags other than `alpine` and `bookworm` (`noble`, `rocky`, ...) | v2.3.0 | `alpine` / `bookworm`, or one `docker build` |
+| nginx `stable`, `stable-alpine` (and the module package's) | v2.7.0 | `alpine` / `latest` (the newest nginx), or a pinned version |
 
 What will go, and deleting it (the maintainer, with `delete:packages`):
 `sh .github/scripts/prune-images.sh` lists it, `--delete` deletes it.

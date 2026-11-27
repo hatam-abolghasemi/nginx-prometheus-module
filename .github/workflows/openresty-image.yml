@@ -10,12 +10,13 @@ name: OpenResty image
 # Any other flavor is one docker build away (docs/images.md#any-other-flavor),
 # or dispatch this workflow with flavors=noble,rocky (or "all").
 #
-# The schedule watches upstream: a new docker-openresty release is built, and
-# so is a release upstream has rebuilt under the same tag (a new base image):
-# each image records the digest it was built from
-# (org.opencontainers.image.base.digest) and is rebuilt when Docker Hub's
-# digest differs. latest and alpine are pushed last (the promote job), so the
-# package page shows the newest alpine first.
+# One release: the newest docker-openresty release on Docker Hub (it can be
+# behind the newest nginx; each image follows its own upstream). Runs on a
+# push to the Lua module, and when watch-upstream.yml sees a new release or an
+# upstream image rebuilt under the same tag (each image records the digest it
+# was built from, org.opencontainers.image.base.digest). latest and alpine are
+# pushed last (the promote job), so the package page shows the newest Alpine
+# first.
 #
 # This is the OpenResty sidecar (the Lua exporter under lib/ and vendor/),
 # unchanged by the native module. Flavors and platforms are read from Docker
@@ -23,8 +24,6 @@ name: OpenResty image
 # without editing this file. Failed runs are retried by retry.yml.
 
 on:
-  schedule:
-    - cron: "17 */6 * * *"
   push:
     branches: [main]
     paths:
@@ -86,7 +85,16 @@ jobs:
             | sort -V)
           newest_with_prefix() { printf '%s\n' "$all_tags" | awk -v p="$1" 'index($0, p) == 1' | tail -n1; }
 
-          latest=$(printf '%s\n' "$all_tags" | tail -n1)
+          # the newest release Docker Hub has its images for (they come out a
+          # little after the git tag)
+          latest=""
+          for t in $(printf '%s\n' "$all_tags" | sort -rV | head -n 5); do
+            if curl -fsS -o /dev/null --retry 3 \
+                 "https://hub.docker.com/v2/namespaces/${BASE_IMAGE%%/*}/repositories/${BASE_IMAGE#*/}/tags/$t-$LATEST_FLAVOR"; then
+              latest=$t; break
+            fi
+          done
+          [ -n "$latest" ] || { echo "::error::no $BASE_IMAGE image on Docker Hub for any of the newest releases"; exit 1; }
           tag="${REQUESTED_TAG:-$latest}"
           if ! printf '%s' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
             echo "::error::'$tag' is not a <openresty-version>-<revision> tag"
@@ -104,7 +112,7 @@ jobs:
             echo "is_newest_revision=$(flag "$tag" "$(newest_with_prefix "$resty_version-")")"
             echo "is_newest_in_series=$(flag "$tag" "$(newest_with_prefix "$series.")")"
           } | tee -a "$GITHUB_OUTPUT"
-          echo "newest upstream release: $latest"
+          echo "the newest release on Docker Hub: $latest"
 
       - uses: docker/login-action@v3
         with:
@@ -154,30 +162,16 @@ jobs:
             if [ "$wanted" != ",," ] && [[ "$wanted" != *",$flavor,"* ]]; then
               continue
             fi
-            # on the schedule: built already, from the same upstream image
-            if [ "$GITHUB_EVENT_NAME" = "schedule" ]; then
-              digest=$(jq -r .digest <<< "$row")
-              have=$(docker buildx imagetools inspect --raw "$IMAGE:$UPSTREAM_TAG-$flavor" 2> /dev/null \
-                     | jq -r '.annotations["org.opencontainers.image.base.digest"] // ""' || true)
-              if [ -n "$have" ] && [ "$have" = "$digest" ]; then
-                echo "$IMAGE:$UPSTREAM_TAG-$flavor is up to date"
-                continue
-              fi
-              [ -n "$have" ] && echo "upstream $UPSTREAM_TAG-$flavor was rebuilt: $have -> $digest"
-            fi
             echo "build $flavor ($(jq -r .platforms <<< "$row"))"
             selected+="$row"$'\n'
           done <<< "$candidates"
 
-          if [ -z "$selected" ] && [ -z "$candidates" ]; then
-            echo "::notice::no $BASE_IMAGE:$UPSTREAM_TAG-* images on Docker Hub yet; checked again on the next run"
-          fi
+          [ -n "$selected" ] || { echo "::error::no $BASE_IMAGE:$UPSTREAM_TAG image in the flavors $wanted"; exit 1; }
           echo "matrix=$(printf '%s' "$selected" | jq -sc '{include: .}')" >> "$GITHUB_OUTPUT"
           echo "candidates=$(printf '%s' "$candidates" | jq -sc .)" >> "$GITHUB_OUTPUT"
 
   build:
     needs: detect
-    if: fromJSON(needs.detect.outputs.matrix).include[0] != null
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
@@ -391,7 +385,7 @@ jobs:
           for t in "${tags[@]}"; do tag_args+=(-t "$IMAGE:$t"); done
           tag_args+=(--annotation "index,manifest:org.opencontainers.image.description=$IMAGE_DESCRIPTION")
           tag_args+=(--annotation "index,manifest:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY")
-          # what the schedule compares with Docker Hub to see an upstream rebuild
+          # what watch-upstream.yml compares with Docker Hub to see an upstream rebuild
           if [ -n "$BASE_DIGEST" ]; then
             tag_args+=(--annotation "index,manifest:org.opencontainers.image.base.digest=$BASE_DIGEST")
           fi
@@ -419,11 +413,11 @@ jobs:
   # first, with its description
   promote:
     needs: [detect, build]
-    if: needs.build.result == 'success' && needs.detect.outputs.is_latest == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
       UPSTREAM_TAG: ${{ needs.detect.outputs.upstream_tag }}
+      IS_LATEST: ${{ needs.detect.outputs.is_latest }}
     steps:
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -433,6 +427,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - run: |
           set -euo pipefail
+          if [ "$IS_LATEST" != "true" ]; then
+            echo "$UPSTREAM_TAG is not the newest: latest stays where it is"; exit 0
+          fi
           IMAGE="ghcr.io/$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')/openresty"
           src="$IMAGE:$UPSTREAM_TAG-$LATEST_FLAVOR"
           if ! docker buildx imagetools inspect "$src" > /dev/null 2>&1; then

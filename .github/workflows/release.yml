@@ -9,8 +9,8 @@ name: Release
 # Release -> Run workflow) to rewrite its title and notes.
 #
 # Project releases are decoupled from image tags: images keep the upstream
-# images' own tags. Once a release exists, nginx-image.yml is dispatched to
-# attach the prebuilt .so files.
+# images' own tags. Once a release exists, nginx-image.yml is started: its
+# build attaches the prebuilt .so files for the newest nginx.
 on:
   push:
     tags: ["v*.*.*"]
@@ -88,5 +88,4 @@ jobs:
           echo "### $NAME" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Attach the prebuilt modules
-        if: github.event_name == 'push'
-        run: gh workflow run nginx-image.yml -R "$GITHUB_REPOSITORY" -f images=false -f assets=true
+        run: gh workflow run nginx-image.yml -R "$GITHUB_REPOSITORY"
