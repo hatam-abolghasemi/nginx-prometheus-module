@@ -1,7 +1,7 @@
 # Changelog
 
 This project's own code, grouped by release. Each release lists its dated
-entries, newest first. The vendored library under `vendor/nginx-lua-prometheus/`
+entries, newest first. The vendored library under `openresty/vendor/nginx-lua-prometheus/`
 has its own `CHANGELOG.md`.
 
 A release's section here is also its GitHub Release notes: pushing a `vX.Y.Z`
@@ -13,12 +13,37 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.3.0 — 2026-11-27
+
 ### 2026-11-27
 
+- **Stream (L4) in the C module.** A second module,
+  `ngx_stream_prometheus_module.so`, records every TCP/UDP session a
+  `stream{}` server proxies and serves it on the same `:9145/metrics`:
+  sessions, bytes to and from the client and the upstream, session duration,
+  upstream connect time and the sessions open now, by `destination`,
+  `upstream_addr` and `status`, with histograms (session duration, connect
+  time, first byte time) opt-in. Same metric names as the Lua module. Name a
+  server with `prometheus_destination redis;`; the other directives are the
+  http ones (`prometheus_zone`, a 1m `prometheus_stream` zone by default,
+  `prometheus_metric`, `prometheus_label`, `prometheus_buckets`,
+  `prometheus_gauge_expiry`, `prometheus_record`). Guide: [docs/nginx/stream.md](docs/nginx/stream.md).
+- **`nginx_metric_errors_total`** now also counts stream sessions not
+  recorded because the stream zone was full.
+- **The nginx image** loads both modules, and includes
+  `/etc/nginx/main.d/*.conf` at the top level of `nginx.conf`, where
+  `stream{}` blocks go. The sidecar takes `STREAM="redis:16379:redis.shop:6379 ..."`:
+  one local port per destination, proxied and recorded.
+- **Release assets** are now two `.so` per nginx version, libc and
+  architecture: `ngx_http_prometheus_module.so` and
+  `ngx_stream_prometheus_module.so`. The http one still loads alone, in an
+  nginx built without `--with-stream`.
+- **README** rewritten around what the module exposes: every metric and
+  label, with examples, and how routes are sanitized.
 - **One module, two implementations, one directory each.** The C module moved
-  from `module/` and `tests/` to [`nginx/`](nginx/) (`config`, `src/`,
+  from `module/` and `tests/` to `nginx/` (`config`, `src/`,
   `docker/`, `tests/`); the Lua module from `lib/`, `vendor/`, `docker/` and
-  `tests/` to [`openresty/`](openresty/). Docs follow: [`docs/nginx/`](docs/nginx/README.md),
+  `tests/` to `openresty/`. Docs follow: [`docs/nginx/`](docs/nginx/README.md),
   [`docs/openresty/`](docs/openresty/README.md), and a [`docs/README.md`](docs/README.md)
   comparing the two; `ARCHITECTURE.md` is now `docs/openresty/architecture.md`.
   Each image builds from its own directory, and the test workflows are
