@@ -81,6 +81,52 @@ curl -s localhost:9145/metrics | grep '^nginx_stream_connections_total'
 
 ---
 
+## Who opened the session
+
+`source_service` and `source_namespace`, off by default as in the Lua
+module, the same meaning as on the HTTP metrics:
+
+```nginx
+stream {
+    prometheus_label source_service   on;
+    prometheus_label source_namespace on;
+    # servers as above
+}
+```
+
+```
+nginx_stream_connections_total{destination="redis",upstream_addr="10.233.12.7:6379",status="200",source_service="checkout",source_namespace="shop"} 418
+nginx_stream_connections_active{state="active",source_service="checkout",source_namespace="shop"} 6
+```
+
+The caller is worked out by the http module, with its
+[caller identity](identity.md) settings in `http{}`: the same
+`prometheus_source_static` and `prometheus_source_ptr` ranges, PTR cache and
+DNS client, `prometheus_source_default` and `prometheus_source_unresolved`.
+In this order:
+
+1. an address in a `prometheus_source_ptr` range: its Service by reverse DNS
+   (unresolved until the answer is there);
+2. an address in a `prometheus_source_static` range: that range's labels;
+3. loopback or a unix socket: this pod itself, its [own identity](identity.md#own-identity)
+   (`app` / `namespace`). In the sidecar, where the app connects to
+   `127.0.0.1:<port>`, that is every session;
+4. anything else: `prometheus_source_default`.
+
+A new address's lookup starts when its first session opens; the labels are
+read when it closes, so even that first session is usually resolved.
+`connections_active` uses what's known when a session opens.
+
+There's no User-Agent or `X-Forwarded-Client-Cert` on L4, so no probe rule and
+no waypoint unwrapping: a session through the mesh waypoint is labelled
+`waypoint`.
+
+With the source labels on, `connections_active` is one series per caller
+(`state="active"` plus the two labels), and nothing until a first session.
+Turning them on or off starts the stream counts over on the next reload.
+
+---
+
 ## Limits
 
 - The app must connect to the local port; something with the upstream
@@ -89,7 +135,10 @@ curl -s localhost:9145/metrics | grep '^nginx_stream_connections_total'
   Kubernetes Service that's its ClusterIP, stable. Turn it off with
   `prometheus_label upstream_addr off;` if your upstreams change addresses.
 - TLS to the upstream (`proxy_ssl on`) is fine; the session is still counted.
-- Caller identity (`source_service` on stream sessions) isn't in the C module
-  yet; the Lua module has it, off by default.
+- Caller identity on stream needs the http module's zone; without it every
+  caller is `unknown` (and a warning is logged at start).
+- PTR callers are only resolved when caller identity is on in `http{}` too
+  (`source_*` labels and `prometheus_source_ptr`): that's what starts the DNS
+  client. Static ranges, loopback and the default work either way.
 - No `stream{}` without an `http{}` with the module: stream metrics are
   served by the http module.

@@ -12,7 +12,7 @@ with either, and so does the [dashboard](../grafana/).
 | Inbound, sidecar | ✓ | ✓ |
 | Caller and own identity | ✓ | ✓ |
 | Outbound | ✓ (HTTPS on nginx 1.31+) | ✓ |
-| Stream (L4) | ✓ (caller identity not yet) | ✓ |
+| Stream (L4), with caller identity | ✓ | ✓ |
 | https interception | ✓ (nginx 1.31+) | ✓ |
 | Status | where development is focused | maintained in parallel |
 

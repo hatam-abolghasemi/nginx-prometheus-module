@@ -13,7 +13,9 @@ Caller names come from reverse DNS of the caller's pod IP, so they need
 **Kubernetes** cluster DNS. Under plain Docker everything else works, and
 callers get the [default labels](#how-a-caller-is-named).
 
-Depends on nothing; the [sidecar](sidecar.md) makes it one variable.
+Depends on nothing; the [sidecar](sidecar.md) makes it one variable. The
+same caller labels work on [stream sessions](stream.md#who-opened-the-session),
+with these settings.
 
 ---
 

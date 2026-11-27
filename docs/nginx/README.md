@@ -37,8 +37,7 @@ the module (stock nginx, or the nginx image)
 | [stream](stream.md) | TCP and UDP sessions nginx proxies (Redis, databases, brokers): count, bytes, duration, connect time, by destination | the stream `.so` and a `stream{}` server, or `STREAM` in the image |
 
 Caller identity works on any nginx, the sidecar only makes it one variable.
-What [the Lua module](../openresty/README.md) has that this one doesn't yet:
-caller identity on stream sessions.
+Everything [the Lua module](../openresty/README.md) has, this one has too.
 
 ## Install
 
@@ -188,7 +187,7 @@ In `stream{}` (the stream module, [stream](stream.md)):
 |---|---|---|---|
 | `prometheus_zone <size>\|off;` | `1m` | stream | Shared memory for stream sessions; `off`: record nothing |
 | `prometheus_metric <name> on\|off;` | see [stream metrics](#stream-metrics) | stream | Turns one stream metric on or off |
-| `prometheus_label <name> on\|off;` | all on | stream | `destination`, `upstream_addr`, `status` |
+| `prometheus_label <name> on\|off;` | see below | stream | `destination`, `upstream_addr`, `status` (on); `source_service`, `source_namespace` (off, [who opened the session](stream.md#who-opened-the-session)) |
 | `prometheus_buckets <histogram> <le>...;` | see below | stream | Buckets of a stream histogram |
 | `prometheus_gauge_expiry <time>;` | `15s` | stream | As in http, for the stream gauges |
 | `prometheus_destination <name>;` | `unknown` | server | The `destination` label: what this server proxies to (`redis`, `orders-db`) |
@@ -251,8 +250,9 @@ connection requests `1 2 5 10 25 50 100 250`; connection time `0.1 0.5 1 5 15
 ### Stream metrics
 
 From `ngx_stream_prometheus_module.so`, per `destination`, `upstream_addr`
-and `status` (`200`, or `502` when the upstream couldn't be reached), the
-same names and defaults as the Lua module:
+and `status` (`200`, or `502` when the upstream couldn't be reached), and
+`source_service` / `source_namespace` when they're on, the same names and
+defaults as the Lua module:
 
 | Metric | `prometheus_metric` | Type | Default |
 |---|---|---|---|
@@ -264,7 +264,7 @@ same names and defaults as the Lua module:
 | `nginx_stream_upstream_connect_time_seconds` | `upstream_connect_time` | gauge, last session that connected | on |
 | `nginx_stream_upstream_connect_time_seconds_histogram` | `upstream_connect_time_histogram` | histogram | off |
 | `nginx_stream_upstream_first_byte_time_seconds` | `upstream_first_byte_time_histogram` | histogram | off |
-| `nginx_stream_connections_active{state="active"}` | `connections_active` | gauge: sessions open now, all servers | on |
+| `nginx_stream_connections_active{state="active"}` | `connections_active` | gauge: sessions open now, all servers; per caller with the source labels on | on |
 
 Default buckets: session `0.001 0.005 0.01 0.05 0.1 0.5 1 5 15 30 60`;
 connect and first byte `0.001 0.005 0.01 0.05 0.1 0.5 1`.

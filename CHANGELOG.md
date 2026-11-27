@@ -13,6 +13,26 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.5.0 — 2026-11-27
+
+### 2026-11-27
+
+- **Caller identity on stream sessions in the C module.** With
+  `prometheus_label source_service on;` and `prometheus_label source_namespace on;`
+  in `stream{}` (off by default, as in the Lua module), every stream metric
+  gets `source_service` / `source_namespace` after `status`, and
+  `nginx_stream_connections_active` is kept per caller. The dashboard's stream
+  panels that group by caller now work with the C module.
+- **One resolver for both modules.** The stream module asks the http module,
+  found by its zone's name, so it uses the same ranges, PTR cache and DNS
+  client as HTTP callers. The two `.so` files still don't link to each other.
+  A configured range comes first, then loopback (this pod's own identity, as
+  the Lua module does it), then `prometheus_source_default`.
+  Guide: [docs/nginx/stream.md](docs/nginx/stream.md#who-opened-the-session).
+- **Tests:** `nginx/tests/stream_test.sh` covers PTR, NXDOMAIN, static,
+  loopback and per-caller active sessions, plus a reload that turns the
+  labels off while a session is open.
+
 ## v2.4.0 — 2026-11-27
 
 ### 2026-11-27
