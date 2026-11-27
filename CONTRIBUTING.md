@@ -85,7 +85,7 @@ To see your change end to end, build the image and run the quickstart against it
 ```bash
 docker build -f openresty/docker/Dockerfile --build-arg OPENRESTY_TAG=alpine -t ope:dev openresty
 cd examples/quickstart
-sed -i 's#ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:latest#ope:dev#' docker-compose.yml
+sed -i 's#ghcr.io/hatam-abolghasemi/openresty:latest#ope:dev#' docker-compose.yml
 docker compose up -d
 curl -s localhost:9145/metrics | grep -v '^#' | head -40
 ```

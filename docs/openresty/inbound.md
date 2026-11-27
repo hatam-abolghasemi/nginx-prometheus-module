@@ -41,7 +41,7 @@ records every request. Point it at your app's port with `APP_PORT`.
 
 ```yaml
 - name: nginx
-  image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:alpine  # pin a tag from docs/images.md
+  image: ghcr.io/hatam-abolghasemi/openresty:alpine  # pin a tag from docs/images.md
   env:
     - name: APP_PORT
       value: "8080"          # the port your app listens on
@@ -61,7 +61,7 @@ the app:
 docker run -d --name app -p 8080:8080 your-app:latest
 docker run -d --name nginx --network container:app \
   -e APP_PORT=8080 \
-  ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:alpine
+  ghcr.io/hatam-abolghasemi/openresty:alpine
 ```
 
 > Under plain Docker everything here works **except** `source_service` /

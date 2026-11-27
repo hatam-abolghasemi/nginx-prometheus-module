@@ -41,7 +41,7 @@ spec:
 
       - name: nginx
         # pin a release + flavor from docs/images.md, e.g. <release>-alpine
-        image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:alpine
+        image: ghcr.io/hatam-abolghasemi/openresty:alpine
         env:
         - { name: APP_PORT, value: "8080" }
         # override simple metrics_config.lua values, see docs/openresty/modules.md#config_envlua

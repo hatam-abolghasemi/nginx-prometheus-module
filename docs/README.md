@@ -2,15 +2,13 @@
 
 nginx-prometheus-module is one module with two implementations. They record
 the same metrics with the same names, labels and route rules, so queries work
-with either. The [dashboard](../grafana/) is built on the Lua module's labels:
-its filters need `namespace` on the connection metrics, which the C module
-doesn't add yet.
+with either, and so does the [dashboard](../grafana/).
 
 | | [The C module](nginx/README.md) | [The Lua module](openresty/README.md) |
 |---|---|---|
 | Runs on | stock nginx (any version, `--with-compat`) | OpenResty, or nginx with `lua-nginx-module` |
 | Setup | `load_module`; metrics on `:9145` | the image, or the Lua files in your OpenResty |
-| Image | [`…/nginx`](images.md#nginx), every official nginx tag | [`…/openresty`](images.md#openresty), every docker-openresty tag |
+| Image | [`…/nginx`](images.md#nginx), nginx mainline and stable, debian and alpine | [`…/openresty`](images.md#openresty), every docker-openresty release, alpine and bookworm |
 | Inbound, sidecar | ✓ | ✓ |
 | Caller and own identity | ✓ | ✓ |
 | Outbound | ✓ (HTTPS on nginx 1.31+) | ✓ |

@@ -13,6 +13,23 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.3.1 — 2026-11-27
+
+### 2026-11-27
+
+- **Shorter image names:** `ghcr.io/hatam-abolghasemi/nginx` and
+  `ghcr.io/hatam-abolghasemi/openresty`, same tags. The old names
+  (`…/nginx-prometheus-module/nginx`, `…/nginx-prometheus-module/openresty`)
+  stay pullable but get no new builds: change the image name when you upgrade.
+- **The main flavors are built, any other is one `docker build`:** nginx
+  default (debian) and `alpine`, for mainline and stable; OpenResty `alpine`
+  and `bookworm`. Tags for other flavors (`alpine-slim`, `perl`, `otel`,
+  `noble`, ...) are no longer published; [build any of them](docs/images.md#any-other-flavor)
+  from the same Dockerfile, or dispatch the workflow with `flavors=all`.
+- **The dashboard works with the C module too.** Its `namespace` and `pod`
+  come from the scrape (the ServiceMonitor), not from the module; the docs
+  said otherwise.
+
 ## v2.3.0 — 2026-11-27
 
 ### 2026-11-27

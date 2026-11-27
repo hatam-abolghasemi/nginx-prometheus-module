@@ -250,19 +250,19 @@ destination gets metrics by default.
 `.github/workflows/openresty-image.yml` follows
 [openresty/docker-openresty](https://github.com/openresty/docker-openresty)
 every 6 hours. For the newest `<openresty-version>-<revision>` release it reads,
-from Docker Hub, every flavor upstream published (`<release>-<flavor>` tags,
-minus the per-arch ones) and the platforms each flavor has, then runs one
-matrix job per flavor: layer this repo onto
+from Docker Hub the flavors upstream published (`<release>-<flavor>` tags,
+minus the per-arch ones) and the platforms each has, keeps the main ones
+(`DEFAULT_FLAVORS`: `alpine`, `bookworm`), then runs one matrix job per flavor: layer this repo onto
 `openresty/openresty:<release>-<flavor>` (`docker/Dockerfile`), smoke-test the
 amd64 build (inbound, outbound, and https interception with a throwaway CA),
 and push all platforms. Nothing is compiled. Flavors that aren't
 on Docker Hub yet are picked up by a later run; on a schedule, flavors whose
 image already exists are skipped. Pushes to `main` that touch `lib/`,
-`vendor/` or `docker/` rebuild every flavor of the newest release;
+`vendor/` or `docker/` rebuild those flavors of the newest release;
 `workflow_dispatch` takes any release (OpenResty 1.31+, for native CONNECT) and
-an optional flavor list.
+an optional flavor list (`all` for every flavor).
 
-Tags are docker-openresty's, under `ghcr.io/<owner>/nginx-prometheus-module/openresty`:
+Tags are docker-openresty's, under `ghcr.io/<owner>/openresty`:
 
 | Tag | Meaning |
 |---|---|

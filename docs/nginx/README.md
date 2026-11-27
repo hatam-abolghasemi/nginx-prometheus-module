@@ -47,7 +47,7 @@ Every official `nginx` image tag, rebuilt with the module loaded. Swap the
 image name and keep the tag:
 
 ```bash
-docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:alpine
+docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx:alpine
 curl -s localhost:9145/metrics
 ```
 

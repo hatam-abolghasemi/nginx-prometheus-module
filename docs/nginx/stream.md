@@ -42,7 +42,7 @@ One entry per destination, `<name>:<local port>:<host>:<port>`:
 
 ```yaml
 - name: nginx
-  image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:mainline-alpine
+  image: ghcr.io/hatam-abolghasemi/nginx:mainline-alpine
   env:
     - { name: APP_PORT, value: "8080" }
     - { name: STREAM,   value: "redis:16379:redis-master.data.svc:6379 orders-db:15432:orders-db.data.svc:5432" }

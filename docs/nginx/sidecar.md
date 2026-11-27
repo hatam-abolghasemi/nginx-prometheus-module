@@ -32,7 +32,7 @@ upstream response time is what the app took. Every metric and label:
 
 ```yaml
 - name: nginx
-  image: ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:mainline-alpine  # pin a tag, docs/images.md; mainline for HTTPS outbound
+  image: ghcr.io/hatam-abolghasemi/nginx:mainline-alpine  # pin a tag, docs/images.md; mainline for HTTPS outbound
   env:
     - { name: APP_PORT, value: "8080" }            # the port your app listens on
   ports:
@@ -55,7 +55,7 @@ reaches it.
 ```bash
 docker run -d --name app -p 80:80 -p 9145:9145 your-app:latest
 docker run -d --name nginx --network container:app -e APP_PORT=8080 \
-  ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:mainline-alpine
+  ghcr.io/hatam-abolghasemi/nginx:mainline-alpine
 ```
 
 ### 2. Scrape `:9145/metrics`

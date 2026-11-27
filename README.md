@@ -36,11 +36,12 @@ nginx_stream_connections_total{destination="redis",upstream_addr="10.233.12.7:63
 
 ## Get it
 
-**The image**: every official `nginx` tag, rebuilt with the module loaded.
-Swap the image name, keep the tag:
+**The image**: the official `nginx` image, rebuilt with the module loaded
+(mainline and stable, debian and alpine; [any other flavor](docs/images.md#any-other-flavor)
+is one `docker build`). Swap the image name, keep the tag:
 
 ```bash
-docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:alpine
+docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx:alpine
 curl -s localhost:9145/metrics
 ```
 
@@ -158,9 +159,7 @@ A Kubernetes example with all of it: [`examples/nginx-sidecar/`](examples/nginx-
 
 <sub>The [Grafana dashboard](grafana/) on a real workload: inbound and
 outbound side by side, IDs collapsed to `$param`, and the caller's namespace
-and service on every row. It is built on the Lua module's labels; with the C
-module its filters need `namespace` on the connection metrics, which isn't
-there yet.</sub>
+and service on every row. It works with either implementation.</sub>
 
 ## Two implementations
 
@@ -183,8 +182,8 @@ in one command in the [quickstart](examples/quickstart/), and see its
 ## Images and releases
 
 ```
-ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx:<nginx-tag>
-ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty:<openresty-tag>-<flavor>
+ghcr.io/hatam-abolghasemi/nginx:<nginx-tag>
+ghcr.io/hatam-abolghasemi/openresty:<openresty-tag>-<flavor>
 ```
 
 Each image is its upstream rebuilt, smoke-tested and published under
