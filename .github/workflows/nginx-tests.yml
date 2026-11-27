@@ -82,7 +82,7 @@ jobs:
             opts=(--with-cc-opt='-fsanitize=address,undefined -fno-omit-frame-pointer -O1'
                   --with-ld-opt='-fsanitize=address,undefined')
           fi
-          ./auto/configure --prefix="$RUNNER_TEMP/out" --with-compat \
+          ./auto/configure --prefix="$RUNNER_TEMP/out" --with-compat --with-stream \
             --with-http_stub_status_module --with-http_ssl_module --with-http_v2_module \
             --add-dynamic-module="$GITHUB_WORKSPACE/nginx" "${opts[@]}"
           make -j"$(nproc)"
@@ -97,3 +97,4 @@ jobs:
             sh "nginx/tests/${t}_test.sh" "$RUNNER_TEMP/out/sbin/nginx" \
               "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
           done
+          sh nginx/tests/stream_test.sh "$RUNNER_TEMP/out/sbin/nginx" "$RUNNER_TEMP/out/modules"

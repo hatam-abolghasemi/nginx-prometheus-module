@@ -245,22 +245,25 @@ jobs:
           set -euo pipefail
           docker run -d --name smoke-app busybox \
             sh -c 'mkdir -p /www/orders && echo app-ok > /www/orders/42 && httpd -f -p 8080 -h /www'
-          docker run -d --name smoke-sidecar --network container:smoke-app -e APP_PORT=8080 nginx-prometheus:smoke
+          docker run -d --name smoke-sidecar --network container:smoke-app -e APP_PORT=8080 \
+            -e STREAM="web:18080:127.0.0.1:8080" nginx-prometheus:smoke
           probe() { docker run --rm --network container:smoke-app curlimages/curl -sS --retry 10 --retry-connrefused --retry-delay 1 -m 15 "$@"; }
 
           [ "$(probe http://127.0.0.1/orders/42)" = "app-ok" ]
+          [ "$(probe http://127.0.0.1:18080/orders/42)" = "app-ok" ]   # through stream
           docker logs smoke-sidecar 2>&1 | grep -q 'sidecar for 127.0.0.1:8080'
 
           # outbound: plain HTTP always, CONNECT where the tunnel module is
           [ "$(probe -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 http://example.com/)" = "200" ]
           tunnel=false
-          if docker logs smoke-sidecar 2>&1 | grep -q 'outbound on 127.0.0.1:3128$'; then
+          if docker logs smoke-sidecar 2>&1 | grep 'outbound on 127.0.0.1:3128' | grep -qv 'HTTP only'; then
             tunnel=true
             [ "$(probe -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 https://example.com/)" = "200" ]
           fi
 
           metrics=$(probe http://127.0.0.1:9145/metrics)
           echo "$metrics" | grep -q 'route="/orders/$param",status="200"'
+          echo "$metrics" | grep -q 'nginx_stream_connections_total{destination="web",upstream_addr="127.0.0.1:8080",status="200"}'
           echo "$metrics" | grep -q 'method="GET",route="/",status="200",host="example.com",mode="1"'
           if $tunnel; then
             echo "$metrics" | grep -q 'method="CONNECT",route="example.com:443",status="200",host="example.com",mode="1",protocol="tunnel"'
@@ -340,8 +343,10 @@ jobs:
           missing=false
           for libc in glibc musl; do
             for arch in amd64 arm64; do
-              f="ngx_http_prometheus_module-$tag-nginx-$VERSION-linux-$arch-$libc.so"
-              printf '%s\n' "$have" | grep -qx "$f" || missing=true
+              for m in http stream; do
+                f="ngx_${m}_prometheus_module-$tag-nginx-$VERSION-linux-$arch-$libc.so"
+                printf '%s\n' "$have" | grep -qx "$f" || missing=true
+              done
             done
           done
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -377,10 +382,14 @@ jobs:
               --target module \
               --output "type=local,dest=out/$libc" nginx
             for arch in amd64 arm64; do
-              f="ngx_http_prometheus_module-$TAG-nginx-$VERSION-linux-$arch-$libc.so"
-              cp "out/$libc/linux_$arch/ngx_http_prometheus_module.so" "$f"
-              sha256sum "$f" > "$f.sha256"
-              files+=("$f" "$f.sha256")
+              for m in http stream; do
+                # releases before v2.3.0 have no stream module
+                [ -f "out/$libc/linux_$arch/ngx_${m}_prometheus_module.so" ] || continue
+                f="ngx_${m}_prometheus_module-$TAG-nginx-$VERSION-linux-$arch-$libc.so"
+                cp "out/$libc/linux_$arch/ngx_${m}_prometheus_module.so" "$f"
+                sha256sum "$f" > "$f.sha256"
+                files+=("$f" "$f.sha256")
+              done
             done
           done
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber "${files[@]}"

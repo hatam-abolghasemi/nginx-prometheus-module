@@ -90,13 +90,14 @@ esac
 
 # where the build-from-source guide was before the nginx/ and openresty/ split
 guide=docs/nginx/README.md
-case $tag in v2.0.*|v2.1.*|v2.2.*) guide=docs/module.md ;; esac
+stream_note=" For stream (L4), load \`ngx_stream_prometheus_module.so\` too; its metrics are on the same \`/metrics\`."
+case $tag in v2.0.*|v2.1.*|v2.2.*) guide=docs/module.md; stream_note="" ;; esac
 
 cat <<NOTE
 
 ## Module
 
-The \`.so\` files attached to this release are built from this tag for the newest mainline and stable nginx, glibc and musl, amd64 and arm64. A module loads only into the nginx version it was built for: check \`nginx -V\`, copy the file into \`modules/\`, and add \`load_module modules/ngx_http_prometheus_module.so;\` at the top of \`nginx.conf\`. That line is the whole setup: metrics are on \`:9145/metrics\`. Any other nginx version: [build it from source]($repo/blob/$tag/$guide#from-source).
+The \`.so\` files attached to this release are built from this tag for the newest mainline and stable nginx, glibc and musl, amd64 and arm64. A module loads only into the nginx version it was built for: check \`nginx -V\`, copy the file into \`modules/\`, and add \`load_module modules/ngx_http_prometheus_module.so;\` at the top of \`nginx.conf\`. That line is the whole setup: metrics are on \`:9145/metrics\`.$stream_note Any other nginx version: [build it from source]($repo/blob/$tag/$guide#from-source).
 
 ## Images
 

@@ -18,6 +18,11 @@
 #                            (HTTP_PROXY / HTTPS_PROXY), recorded as mode="1".
 #                            HTTPS goes through as CONNECT on nginx 1.31+ (the
 #                            tunnel module); on older nginx, plain HTTP only.
+#   STREAM="redis:16379:redis.data.svc:6379 postgres:15432:db.data.svc:5432"
+#                            stream (L4): for each <name>:<port>:<host>:<port>,
+#                            a TCP proxy on 127.0.0.1:<port> to <host>:<port>,
+#                            recorded with destination="<name>". Point the
+#                            app's client at 127.0.0.1:<port>.
 #
 # Everything else is plain nginx config: mount more files into conf.d/.
 set -eu
@@ -193,6 +198,58 @@ if [ "${OUTBOUND:-on}" != "off" ]; then
             said=", outbound on 127.0.0.1:3128 (HTTP only: HTTPS needs nginx 1.31+)"
         fi
     fi
+fi
+
+if [ -n "${STREAM:-}" ]; then
+    main=/etc/nginx/main.d/sidecar-stream.conf
+
+    if ! : > "$main" 2>/dev/null; then
+        echo "$0: STREAM is set but $main can't be written" >&2
+        exit 1
+    fi
+
+    {
+        echo "# Generated at start by /docker-entrypoint.d/40-prometheus-sidecar.sh"
+        echo
+        echo "stream {"
+
+        for entry in $STREAM; do
+            name=${entry%%:*}
+            rest=${entry#*:}
+            listen=${rest%%:*}
+            target=${rest#*:}
+
+            case $listen in
+                ''|*[!0-9]*) listen="" ;;
+            esac
+
+            case $target in
+                ?*:?*) ;;
+                *) target="" ;;
+            esac
+
+            if [ -z "$name" ] || [ "$name" = "$entry" ] || [ -z "$listen" ] \
+               || [ -z "$target" ]
+            then
+                echo "$0: STREAM entry \"$entry\" is not <name>:<port>:<host>:<port>" >&2
+                exit 1
+            fi
+
+            cat <<EOF
+    server {
+        listen                  127.0.0.1:$listen;
+        prometheus_destination  $name;
+        proxy_pass              $target;
+        proxy_connect_timeout   5s;
+        proxy_timeout           1h;
+    }
+EOF
+        done
+
+        echo "}"
+    } > "$main"
+
+    said="$said, stream: $STREAM"
 fi
 
 echo "$0: sidecar for 127.0.0.1:$APP_PORT${POD_CIDR:+, callers in $POD_CIDR}$said"
