@@ -1,8 +1,9 @@
 name: nginx tests
 
 # The C module (nginx/): the label and identity code on their own, then the
-# module in a real nginx (newest mainline and stable), under AddressSanitizer
-# and UBSan and in a regular build. nginx/tests/module_test.sh checks the
+# module in a real nginx: the newest mainline and stable in a regular build,
+# and the newest mainline again under AddressSanitizer and UBSan (memory and
+# undefined-behaviour checks; the stable line's own core trips them). nginx/tests/module_test.sh checks the
 # exposition with promtool.
 on:
   push:
@@ -23,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       list: ${{ steps.v.outputs.list }}
+      mainline: ${{ steps.v.outputs.mainline }}
     steps:
       - id: v
         run: |
@@ -33,6 +35,7 @@ jobs:
           mainline=$(printf '%s\n' "$all" | tail -n1)
           stable=$(printf '%s\n' "$all" | awk -F. '$2 % 2 == 0' | tail -n1)
           echo "list=$(jq -nc --arg m "$mainline" --arg s "$stable" '[$m, $s] | unique')" >> "$GITHUB_OUTPUT"
+          echo "mainline=$mainline" >> "$GITHUB_OUTPUT"
 
   label:
     runs-on: ubuntu-latest
@@ -56,7 +59,11 @@ jobs:
       fail-fast: false
       matrix:
         version: ${{ fromJSON(needs.versions.outputs.list) }}
-        sanitize: [true, false]
+        sanitize: [false]
+        # the sanitizers on the newest mainline only
+        include:
+          - version: ${{ needs.versions.outputs.mainline }}
+            sanitize: true
     name: nginx ${{ matrix.version }}${{ matrix.sanitize && ' (asan)' || '' }}
     steps:
       - uses: actions/checkout@v5
@@ -91,13 +98,14 @@ jobs:
         env:
           # an nginx dynamic module trips the ODR check by design (ngx_module_names)
           ASAN_OPTIONS: detect_leaks=0:detect_odr_violation=0:halt_on_error=1
-          # nginx core's own reports (nginx 1.30 at startup); none in this module
-          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1:suppressions=${{ github.workspace }}/nginx/tests/ubsan.supp
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
         run: |
           for t in module source plug outbound intercept; do
             sh "nginx/tests/${t}_test.sh" "$RUNNER_TEMP/out/sbin/nginx" \
               "$RUNNER_TEMP/out/modules/ngx_http_prometheus_module.so"
           done
           sh nginx/tests/stream_test.sh "$RUNNER_TEMP/out/sbin/nginx" "$RUNNER_TEMP/out/modules"
-          # the image's sidecar script, in namespaces of its own: needs root
-          sudo -E env "PATH=$PATH" sh nginx/tests/sidecar_test.sh "$RUNNER_TEMP/out/sbin/nginx" "$RUNNER_TEMP/out/modules"
+          # the image's sidecar script, in namespaces of its own: needs root.
+          # The runner's sudo ignores -E: the sanitizer settings go by name
+          sudo env "PATH=$PATH" "ASAN_OPTIONS=$ASAN_OPTIONS" "UBSAN_OPTIONS=$UBSAN_OPTIONS" \
+            sh nginx/tests/sidecar_test.sh "$RUNNER_TEMP/out/sbin/nginx" "$RUNNER_TEMP/out/modules"

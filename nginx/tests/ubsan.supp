@@ -1,9 +1,0 @@
-# UBSan suppressions for the sanitizer CI builds: reports in nginx core itself,
-# with no module loaded, that would stop nginx before any test runs. Nothing
-# here names this module's files: its own reports always fail the build.
-#
-#   UBSAN_OPTIONS=suppressions=nginx/tests/ubsan.supp:...
-#
-# nginx 1.30 (fixed in 1.31): ngx_init_cycle() copies an empty string with
-# ngx_pstrdup(), i.e. memcpy(dst, NULL, 0)
-nonnull-attribute:src/core/ngx_string.c

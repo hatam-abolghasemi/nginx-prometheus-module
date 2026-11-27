@@ -13,6 +13,14 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+- **CI:** the sanitizer (ASan/UBSan) build runs on the newest mainline only;
+  the stable line keeps its regular build. nginx 1.30's own core trips UBSan
+  at startup (`memcpy(dst, NULL, 0)`, fixed in 1.31), so that job could never
+  test this module; `nginx/tests/ubsan.supp` is gone with it. The sidecar
+  test gets the sanitizer settings through `sudo` by name: the runner's
+  `sudo` no longer keeps the environment with `-E`, which made both
+  sanitizer jobs fail.
+
 ## v2.7.0 — 2026-11-27
 
 ### 2026-11-27

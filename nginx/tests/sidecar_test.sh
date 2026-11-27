@@ -7,7 +7,7 @@
 # origins for any name on 127.0.0.1:8081 (HTTP) and :8443 (HTTPS, from a
 # "public" CA that is the system trust store in there).
 #
-#   sudo -E sh tests/sidecar_test.sh <nginx binary> <modules dir>
+#   sudo env "ASAN_OPTIONS=$ASAN_OPTIONS" "UBSAN_OPTIONS=$UBSAN_OPTIONS" sh tests/sidecar_test.sh <nginx> <modules dir>
 #
 # Needs root (unshare -mn). Cases: the stock image (no APP_PORT); the sidecar
 # with outbound and STREAM; on nginx 1.31+, https interception, then with
@@ -26,7 +26,7 @@ else
     case $MODULES in /*) ;; *) MODULES=$(pwd)/$MODULES ;; esac
     SELF=$(cd "$(dirname "$0")" && pwd)/$(basename "$0")
 
-    [ "$(id -u)" -eq 0 ] || { echo "skip  sidecar: needs root (sudo -E)"; exit 0; }
+    [ "$(id -u)" -eq 0 ] || { echo "skip  sidecar: needs root (sudo)"; exit 0; }
 
     version=$("$NGINX" -v 2>&1 | sed -n 's#^nginx version: nginx/##p')
     minor=$(echo "$version" | cut -d. -f2)
