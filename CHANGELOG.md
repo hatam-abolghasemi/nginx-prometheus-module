@@ -13,6 +13,19 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.8.3 — 2026-11-28
+
+### 2026-11-28
+
+- **Fix: scrapes no longer inflate the active connection count.** Each scrape
+  of the built-in listener (`:9145`) was counted as an active connection on
+  accept and never taken back on close, so `nginx_http_connections{state="active"}`
+  (and nginx's own `stub_status` "Active connections") rose by one per scrape,
+  forever: slot-utilization panels and alerts climbed with uptime while
+  `reading` / `writing` / `waiting` stayed at 0. Only the counter was wrong;
+  the connections themselves were closed. Present since the built-in listener;
+  a `prometheus;` location of your own was not affected.
+
 ## v2.8.2 — 2026-11-28
 
 ### 2026-11-28
