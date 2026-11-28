@@ -11,8 +11,9 @@
 #
 # Needs root (unshare -mn). Cases: the stock image (no APP_PORT); the sidecar
 # with outbound and STREAM; on nginx 1.31+, https interception, then with
-# INTERCEPT_BYPASS, custom terminator ports, gRPC, and a CA rotated in place
-# (INTERCEPT_CA_RELOAD).
+# INTERCEPT_BYPASS, custom terminator ports, gRPC, a CA rotated in place
+# (INTERCEPT_CA_RELOAD), and outbound with interception on the user's own
+# config (no APP_PORT: a FastCGI app's).
 
 set -u
 
@@ -32,7 +33,7 @@ else
     minor=$(echo "$version" | cut -d. -f2)
     cases="stock sidecar"
     [ "$(echo "$version" | cut -d. -f1)" -gt 1 ] || [ "$minor" -ge 31 ] \
-        && cases="$cases intercept intercept-more"
+        && cases="$cases intercept intercept-more own-config"
 
     total=0
     for c in $cases; do
@@ -150,7 +151,7 @@ else
     grpc=false
 fi
 
-case $CASE in intercept*)
+case $CASE in intercept*|own-config)
     mkdir -p /etc/nginx/intercept
     ec -x509 -days 1 -subj /CN=intercept-ca -keyout /etc/nginx/intercept/ca.key \
         -out /etc/nginx/intercept/ca.crt
@@ -160,12 +161,13 @@ esac
 # the entrypoint, with this case's environment
 case $CASE in
     stock)          set -- "PROMETHEUS_CONFIG=prometheus_bogus on;" ;;
-    sidecar)        set -- APP_PORT=8080 STREAM=web:18081:127.0.0.1:8080 \
+    sidecar)        set -- APP_PORT=8080 STREAM=web:18081:127.0.0.1:8080 OUTBOUND_TIMEOUT=45s \
                            "PROMETHEUS_CONFIG=prometheus_label client_subnet on;" \
                            "PROMETHEUS_STREAM_CONFIG=prometheus_label source_service on;" ;;
     intercept)      set -- APP_PORT=8080 INTERCEPT_TLS=on ;;
     intercept-more) set -- APP_PORT=8080 INTERCEPT_TLS=on INTERCEPT_BYPASS=Pinned.test,.other.test \
                            INTERCEPT_TLS_PORT=4129 INTERCEPT_H2C_PORT=4130 INTERCEPT_CA_RELOAD=1 ;;
+    own-config)     set -- INTERCEPT_TLS=on OUTBOUND_TIMEOUT=60s ;;
 esac
 
 (
@@ -193,12 +195,43 @@ stock)
     has "no errors" 'nginx_metric_errors_total 0'
     hasnt "histograms are off" '_histogram_bucket'
     hasnt "the metrics server isn't recorded" 'route="/metrics"'
+    [ -e /etc/nginx/conf.d/prometheus-outbound.conf ] && fail "no outbound unless asked" || pass "no outbound unless asked"
+    [ -e /etc/nginx/conf.d/default.conf ] && pass "default.conf kept" || fail "default.conf removed"
+    ;;
+
+own-config)
+    ca=/etc/nginx/intercept/ca.crt
+    grep -q 'outbound on 127.0.0.1:3128 with https interception' "$W/entry.log" \
+        && pass "says outbound with interception is on" || fail "start line: $(cat "$W/entry.log")"
+    grep -q 'sidecar for' "$W/entry.log" && fail "not a sidecar" || pass "not a sidecar"
+    [ -e /etc/nginx/conf.d/default.conf ] && pass "the own config stays" || fail "default.conf removed"
+    [ -e /etc/nginx/conf.d/sidecar.conf ] && fail "no sidecar.conf" || pass "no sidecar.conf"
+    out=/etc/nginx/conf.d/prometheus-outbound.conf
+    grep -q 'prometheus_intercept_timeout  60s;' "$out" \
+        && grep -q 'grpc_read_timeout        60s;' "$out" \
+        && ! grep -q '300s' "$out" \
+        && pass "OUTBOUND_TIMEOUT everywhere in outbound" || fail "OUTBOUND_TIMEOUT: $(grep -n 'timeout' "$out")"
+    is "the own server" "$(p http://127.0.0.1/)" hello
+    is "outbound http" "$(px http://example.com:8081/)" "origin example.com"
+    is "https decrypted, sent on verified" "$(px --cacert "$ca" https://example.com:8443/a/1)" "origin-tls example.com"
+    is "a websocket-style upgrade header passes" "$(px -H 'Upgrade: websocket' http://example.com:8081/)" "origin example.com"
+    metrics=$(p http://127.0.0.1:9145/metrics)
+    has "the own server recorded" 'route="/",status="200",host="localhost",mode="0"'
+    has "outbound recorded" 'method="GET",route="/",status="200",host="example.com",mode="1",protocol="http"'
+    has "a decrypted request" 'method="GET",route="/a/$param",status="200",host="example.com",mode="1",protocol="https"'
+    has "no errors" 'nginx_metric_errors_total 0'
     ;;
 
 sidecar)
     is "inbound to the app" "$(p http://127.0.0.1/orders/42)" app-ok
     is "through stream" "$(p http://127.0.0.1:18081/orders/42)" app-ok
     grep -q 'sidecar for 127.0.0.1:8080' "$W/entry.log" && pass "says what it does" || fail "start line"
+    # OUTBOUND_TIMEOUT is outbound's alone: the app's upstream keeps 300s
+    inbound=$(sed -n '/^server {/,/^}/p' /etc/nginx/conf.d/sidecar.conf | sed -n '1,/^}/p')
+    printf '%s\n' "$inbound" | grep -q 'proxy_read_timeout       300s;' \
+        && pass "inbound keeps 300s" || fail "inbound timeout"
+    grep -q 'tunnel_read_timeout     45s;' /etc/nginx/conf.d/sidecar.conf \
+        && pass "OUTBOUND_TIMEOUT on outbound" || fail "OUTBOUND_TIMEOUT on outbound"
     is "outbound http" "$(px http://example.com:8081/)" "origin example.com"
     tunnel=false
     if grep 'outbound on 127.0.0.1:3128' "$W/entry.log" | grep -qv 'HTTP only'; then

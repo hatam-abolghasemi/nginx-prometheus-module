@@ -105,15 +105,17 @@ served by the module itself on `:9145`, never `:80`: a scrape is not app
 traffic, and the sidecar's own paths never shadow the app's.
 
 Without `APP_PORT` the script does nothing but `PROMETHEUS_CONFIG`, and the
-image is stock nginx with metrics.
+image is stock nginx with metrics, unless you ask for the outbound side:
+see [your own config](#your-own-config-outbound-only).
 
 | Variable | Default | |
 |---|---|---|
 | `APP_PORT` | — | Turns the sidecar on: the app's port |
 | `POD_CIDR` | — | [Caller identity](identity.md): the pod ranges, space separated, e.g. `10.233.0.0/16` |
 | `CLUSTER_IP_PREFIX` | — | A `Host` that is an IP starting with this (e.g. `10.233.`) is labelled `kubernetes` |
-| `OUTBOUND` | on | `off`: no forward proxy on `127.0.0.1:3128` |
-| `INTERCEPT_TLS` | `off` | [https interception](interception.md): `on` with a CA at `/etc/nginx/intercept/`; more variables [there](interception.md#with-the-sidecar-image) |
+| `OUTBOUND` | on (off without `APP_PORT`) | `off`: no forward proxy on `127.0.0.1:3128`; `on` without `APP_PORT`: [outbound only](#your-own-config-outbound-only) |
+| `INTERCEPT_TLS` | `off` | [https interception](interception.md): `on` with a CA at `/etc/nginx/intercept/`; more variables [there](interception.md#with-the-sidecar-image). Without `APP_PORT` it turns outbound on too |
+| `OUTBOUND_TIMEOUT` | `300s` | How long outbound waits on a quiet destination: the proxy, gRPC and tunnel read/send timeouts, and a relayed tunnel's idle time (`60s`, `5m`, ...). Inbound keeps its own `300s` |
 | `IPV6` | `off` | `on`: outbound and interception resolve IPv6 (AAAA) too, IPv4 preferred |
 | `STREAM` | — | [Stream](stream.md): `<name>:<local port>:<host>:<port>` entries, space separated |
 | `PROMETHEUS_CONFIG` | — | Module directives for `http{}`, any image, e.g. `prometheus_metric request_duration_histogram on; prometheus_label client_subnet on;` |
@@ -127,6 +129,80 @@ nginx, which also carries the app's traffic.
 For more, it's plain nginx: mount `.conf` files into `/etc/nginx/conf.d/`
 (included at the `http{}` level), or `stream{}` blocks into
 `/etc/nginx/main.d/`.
+
+### Your own config, outbound only
+
+The sidecar's `:80` speaks HTTP to the app. An app behind FastCGI (php-fpm),
+uwsgi or anything else nginx has to translate for keeps its own
+`default.conf` and leaves `APP_PORT` unset; the image adds the outbound side
+alone:
+
+```yaml
+- name: nginx
+  image: ghcr.io/hatam-abolghasemi/nginx:1.31.10-alpine-slim
+  env:
+    - { name: INTERCEPT_TLS, value: "on" }    # or OUTBOUND=on, without interception
+  volumeMounts:
+    - { name: default-conf, mountPath: /etc/nginx/conf.d/default.conf, subPath: default.conf, readOnly: true }
+    - { name: egress-ca,    mountPath: /etc/nginx/intercept, readOnly: true }
+```
+
+The script writes the forward proxy on `127.0.0.1:3128` (and, with
+`INTERCEPT_TLS=on`, the terminators on `:3129` / `:3130`) into
+`conf.d/prometheus-outbound.conf`, with the pod's DNS server, exactly as the
+sidecar has them; `default.conf` stays. `OUTBOUND_TIMEOUT`, `IPV6` and every
+`INTERCEPT_*` variable work the same, CA rotation included (mount the CA
+Secret as a directory, [not with `subPath`](interception.md#limits)). `STREAM` still needs `APP_PORT`.
+Your `default.conf` needs only its own servers, plus for caller identity
+`prometheus_source_ptr <pod CIDR>;`. The log line:
+
+```
+/docker-entrypoint.d/40-prometheus-sidecar.sh: outbound on 127.0.0.1:3128 with https interception
+```
+
+### On upstream's own image, no build
+
+To run `nginx:<version>-alpine-slim` (or any upstream tag) itself, with no
+image of your own, an init container copies the module and this script out of
+the matching image of this repo into an `emptyDir`; Kubernetes 1.33+ could
+mount the image as a volume instead, older clusters need the copy. The module
+package itself can't be used for this: it's `FROM scratch`, with no `cp`.
+
+```yaml
+initContainers:
+  - name: nginx-prometheus
+    image: ghcr.io/hatam-abolghasemi/nginx:1.31.10-alpine-slim   # the SAME tag as below
+    command:
+      - sh
+      - -c
+      - >-
+        cp /usr/lib/nginx/modules/ngx_http_prometheus_module.so
+        /usr/lib/nginx/modules/ngx_stream_prometheus_module.so
+        /docker-entrypoint.d/40-prometheus-sidecar.sh /prometheus/
+        && chmod 755 /prometheus/40-prometheus-sidecar.sh
+    volumeMounts:
+      - { name: nginx-prometheus, mountPath: /prometheus }
+containers:
+  - name: nginx
+    image: nginx:1.31.10-alpine-slim
+    volumeMounts:
+      - { name: nginx-prometheus, mountPath: /etc/nginx/prometheus, readOnly: true }
+      - { name: nginx-prometheus, mountPath: /docker-entrypoint.d/40-prometheus-sidecar.sh,
+          subPath: 40-prometheus-sidecar.sh, readOnly: true }
+      - { name: nginx-conf, mountPath: /etc/nginx/nginx.conf, subPath: nginx.conf, readOnly: true }
+volumes:
+  - { name: nginx-prometheus, emptyDir: { sizeLimit: 16Mi } }
+```
+
+- **The two tags must name the same nginx version.** nginx refuses a module
+  built for another version, and doesn't start. Bump them together, as one
+  value.
+- Upstream's `nginx.conf` has no `load_module`: mount one that starts with
+  `load_module /etc/nginx/prometheus/ngx_http_prometheus_module.so;` (and the
+  stream one, for `STREAM`, plus `include /etc/nginx/main.d/*.conf;`, which
+  matches nothing until `STREAM` writes there).
+- It pulls this repo's image anyway, for the init container: the gain is a
+  long-running container that is upstream's, byte for byte, not smaller pulls.
 
 **Read-only root filesystem?** The script writes into `/etc/nginx/conf.d/`;
 mount an `emptyDir` there, or mount your own `sidecar.conf` and leave

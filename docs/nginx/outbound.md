@@ -53,6 +53,9 @@ the sidecar's log says so.
 
 `OUTBOUND=off` turns it off.
 
+**With the nginx image and your own config** (no `APP_PORT`, e.g. a FastCGI
+app): `OUTBOUND=on`. [Outbound only](sidecar.md#your-own-config-outbound-only).
+
 **On your own nginx:**
 
 ```nginx

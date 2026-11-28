@@ -51,6 +51,10 @@ non-200 HTTP status is kept as is.
 
 ## With the sidecar image
 
+With `APP_PORT`, or without it on your own config (a FastCGI app's):
+`INTERCEPT_TLS=on` then turns outbound on too,
+[outbound only](sidecar.md#your-own-config-outbound-only).
+
 1. Make a CA, once, and keep the key secret:
 
    ```bash
@@ -138,6 +142,9 @@ The sidecar's config is plain nginx; see what the image generates in
   With `worker_processes 4`, a name is minted at most 4 times (one P-256
   signature each, kept 6 days), and a destination may have up to 4 warm
   pools. Nothing is shared, so nothing is locked.
+- **Mount the CA Secret as a directory**, as the example does
+  (`mountPath: /etc/nginx/intercept`). Files mounted with `subPath` are never
+  updated by Kubernetes: a rotated Secret wouldn't reach nginx at all.
 - **A new CA takes a reload:** the master reads it when the configuration
   loads. The image does that for you (`INTERCEPT_CA_RELOAD`); on your own
   nginx, `nginx -s reload` after replacing the files. Trust the new CA in the

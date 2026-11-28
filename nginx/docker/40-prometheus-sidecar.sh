@@ -1,7 +1,7 @@
 #!/bin/sh
 # Run by the nginx image's entrypoint (/docker-entrypoint.d/) at each start.
-# Without APP_PORT it does nothing but PROMETHEUS_CONFIG: the image is stock
-# nginx plus metrics.
+# Without APP_PORT it does nothing but PROMETHEUS_CONFIG (and, opted into,
+# OUTBOUND / INTERCEPT_TLS): the image is stock nginx plus metrics.
 #
 #   PROMETHEUS_CONFIG="prometheus_metric request_duration_histogram on; prometheus_label client_subnet on;"
 #                            module directives for http{}, without mounting a
@@ -25,6 +25,11 @@
 #   OUTBOUND=off             no outbound proxy. On by default: a forward
 #                            proxy on 127.0.0.1:3128 for the app's egress
 #                            (HTTP_PROXY / HTTPS_PROXY), recorded as mode="1".
+#                            Without APP_PORT it is off unless OUTBOUND=on
+#                            or INTERCEPT_TLS=on: your own config serves the
+#                            app (FastCGI, uwsgi, ...), and the image adds
+#                            only the outbound side, in
+#                            conf.d/prometheus-outbound.conf.
 #                            HTTPS goes through as CONNECT on nginx 1.31+ (the
 #                            tunnel module); on older nginx, plain HTTP only.
 #   INTERCEPT_TLS=on         https interception (nginx 1.31+): the CONNECTs
@@ -45,6 +50,10 @@
 #   INTERCEPT_TLS_PORT=3129, INTERCEPT_H2C_PORT=3130
 #                            the loopback ports of the two terminators, if the
 #                            app needs those.
+#   OUTBOUND_TIMEOUT=300s    how long outbound waits on a quiet destination:
+#                            proxy, gRPC and tunnel read/send timeouts, and a
+#                            relayed tunnel's idle time (60s, 5m, ...). Inbound
+#                            keeps its own 300s.
 #   IPV6=on                  outbound and interception resolve IPv6 (AAAA)
 #                            too; IPv4 is preferred. Off by default.
 #   STREAM="redis:16379:redis.data.svc:6379 postgres:15432:db.data.svc:5432"
@@ -81,23 +90,49 @@ check_env_config() {
 rm -f "$extra"
 [ -z "${PROMETHEUS_CONFIG:-}" ] || env_config "$extra" "$PROMETHEUS_CONFIG" PROMETHEUS_CONFIG
 
+out_conf=/etc/nginx/conf.d/prometheus-outbound.conf
+sidecar=""
+
 if [ -z "${APP_PORT:-}" ]; then
-    check_env_config
-    exit 0
+    # no sidecar: outbound (and interception on it) only when asked for
+    rm -f "$out_conf" 2> /dev/null || true
+
+    wanted=${OUTBOUND:-}
+    if [ -z "$wanted" ]; then
+        wanted=off
+        [ "${INTERCEPT_TLS:-off}" = "on" ] && wanted=on
+    fi
+
+    if [ "$wanted" != "on" ]; then
+        if [ "${INTERCEPT_TLS:-off}" = "on" ]; then
+            echo "$0: INTERCEPT_TLS=on needs outbound, but OUTBOUND=$wanted; ignored" >&2
+        fi
+        check_env_config
+        exit 0
+    fi
+
+    OUTBOUND=on
+    conf=$out_conf
+
+    if ! : > "$conf" 2>/dev/null; then
+        echo "$0: OUTBOUND=on but $conf can't be written (read-only conf.d?)" >&2
+        exit 1
+    fi
+else
+    case $APP_PORT in
+        ''|*[!0-9]*) echo "$0: APP_PORT must be a port number, got \"$APP_PORT\"" >&2; exit 1 ;;
+    esac
+
+    sidecar=1
+    conf=/etc/nginx/conf.d/sidecar.conf
+
+    if ! : > "$conf" 2>/dev/null; then
+        echo "$0: APP_PORT is set but $conf can't be written (read-only conf.d?)" >&2
+        exit 1
+    fi
+
+    rm -f /etc/nginx/conf.d/default.conf
 fi
-
-case $APP_PORT in
-    ''|*[!0-9]*) echo "$0: APP_PORT must be a port number, got \"$APP_PORT\"" >&2; exit 1 ;;
-esac
-
-conf=/etc/nginx/conf.d/sidecar.conf
-
-if ! : > "$conf" 2>/dev/null; then
-    echo "$0: APP_PORT is set but $conf can't be written (read-only conf.d?)" >&2
-    exit 1
-fi
-
-rm -f /etc/nginx/conf.d/default.conf
 
 inbound() {
     echo "# Generated at start by /docker-entrypoint.d/40-prometheus-sidecar.sh"
@@ -121,10 +156,8 @@ underscores_in_headers      on;
 ignore_invalid_headers      off;
 large_client_header_buffers 4 32k;
 
-map \$http_upgrade \$prometheus_connection_upgrade {
-    default  upgrade;
-    ""       "";
-}
+# \$prometheus_connection_upgrade comes from the module: "upgrade" when the
+# request has an Upgrade header.
 
 upstream app {
     server 127.0.0.1:$APP_PORT;
@@ -220,8 +253,8 @@ EOF
             grpc_pass  grpcs://prometheus_intercept_grpcs;
         }
         grpc_set_header          Host  $http_host;
-        grpc_read_timeout        300s;
-        grpc_send_timeout        300s;
+        grpc_read_timeout        @OUTBOUND_TIMEOUT@;
+        grpc_send_timeout        @OUTBOUND_TIMEOUT@;
 
         proxy_pass               https://prometheus_intercept_https;
         proxy_http_version       1.1;
@@ -231,8 +264,8 @@ EOF
         proxy_pass_header        Date;
         proxy_buffering          off;
         proxy_request_buffering  off;
-        proxy_read_timeout       300s;
-        proxy_send_timeout       300s;
+        proxy_read_timeout       @OUTBOUND_TIMEOUT@;
+        proxy_send_timeout       @OUTBOUND_TIMEOUT@;
     }
 }
 EOF
@@ -257,8 +290,8 @@ EOF
             grpc_pass  grpc://prometheus_intercept_grpc;
         }
         grpc_set_header          Host  $http_host;
-        grpc_read_timeout        300s;
-        grpc_send_timeout        300s;
+        grpc_read_timeout        @OUTBOUND_TIMEOUT@;
+        grpc_send_timeout        @OUTBOUND_TIMEOUT@;
 
         proxy_pass               http://prometheus_intercept_http;
         proxy_http_version       1.1;
@@ -359,8 +392,8 @@ EOF
         proxy_buffer_size        32k;
         proxy_buffers            4 32k;
         proxy_connect_timeout    10s;
-        proxy_send_timeout       300s;
-        proxy_read_timeout       300s;
+        proxy_send_timeout       @OUTBOUND_TIMEOUT@;
+        proxy_read_timeout       @OUTBOUND_TIMEOUT@;
     }
 EOF
 
@@ -368,15 +401,23 @@ EOF
         cat <<'EOF'
 
     tunnel_connect_timeout  10s;
-    tunnel_read_timeout     300s;
-    tunnel_send_timeout     300s;
+    tunnel_read_timeout     @OUTBOUND_TIMEOUT@;
+    tunnel_send_timeout     @OUTBOUND_TIMEOUT@;
 EOF
+    fi
+
+    if [ -n "$3" ]; then
+        echo "    prometheus_intercept_timeout  @OUTBOUND_TIMEOUT@;"
     fi
 
     echo "}"
 }
 
-inbound > "$conf"
+if [ -n "$sidecar" ]; then
+    inbound > "$conf"
+else
+    echo "# Generated at start by /docker-entrypoint.d/40-prometheus-sidecar.sh" > "$conf"
+fi
 
 said=""
 
@@ -393,6 +434,13 @@ ca_reload=${INTERCEPT_CA_RELOAD:-60}
 case $ca_reload in
     ''|*[!0-9]*) echo "$0: INTERCEPT_CA_RELOAD must be seconds, got \"$ca_reload\"" >&2; exit 1 ;;
 esac
+
+# an nginx time: 60s, 5m, 1h, 500ms; a bare number is seconds
+out_timeout=${OUTBOUND_TIMEOUT:-300s}
+if ! printf '%s' "$out_timeout" | grep -Eq '^[0-9]+(ms|s|m|h|d)?$'; then
+    echo "$0: OUTBOUND_TIMEOUT must be an nginx time (60s, 5m, ...), got \"$out_timeout\"" >&2
+    exit 1
+fi
 
 # host names, lowercased, one per word; anything else is an error
 bypass=""
@@ -455,10 +503,12 @@ if [ "${OUTBOUND:-on}" != "off" ]; then
             fi
         fi
 
-        outbound "$dns" "$tunnel" "$icept" >> "$conf"
+        outbound "$dns" "$tunnel" "$icept" \
+            | sed "s/@OUTBOUND_TIMEOUT@/$out_timeout/g" >> "$conf"
 
         if [ -n "$icept" ]; then
-            intercept "$dns" "$ca_cert" "$ca_key" "$trusted" >> "$conf"
+            intercept "$dns" "$ca_cert" "$ca_key" "$trusted" \
+                | sed "s/@OUTBOUND_TIMEOUT@/$out_timeout/g" >> "$conf"
             said=", outbound on 127.0.0.1:3128 with https interception"
             [ -n "$bypass" ] && said="$said (bypassed:$bypass)"
         elif [ -n "$tunnel" ]; then
@@ -469,8 +519,15 @@ if [ "${OUTBOUND:-on}" != "off" ]; then
     fi
 fi
 
-if [ -n "${STREAM:-}" ]; then
+if [ -n "${STREAM:-}" ] && [ -z "$sidecar" ]; then
+    echo "$0: STREAM needs APP_PORT; ignored" >&2
+fi
+
+if [ -n "${STREAM:-}" ] && [ -n "$sidecar" ]; then
     main=/etc/nginx/main.d/sidecar-stream.conf
+
+    # upstream's own image has no main.d (this repo's image makes it)
+    mkdir -p /etc/nginx/main.d 2> /dev/null || true
 
     if ! : > "$main" 2>/dev/null; then
         echo "$0: STREAM is set but $main can't be written" >&2
@@ -532,7 +589,11 @@ fi
 
 check_env_config
 
-echo "$0: sidecar for 127.0.0.1:$APP_PORT${POD_CIDR:+, callers in $POD_CIDR}$said"
+if [ -n "$sidecar" ]; then
+    echo "$0: sidecar for 127.0.0.1:$APP_PORT${POD_CIDR:+, callers in $POD_CIDR}$said"
+elif [ -n "$said" ]; then
+    echo "$0: ${said#, }"
+fi
 
 # A rotated CA (a Secret updated in place) is read again: the master reads it
 # at each load, so a reload is all it takes. Checked every INTERCEPT_CA_RELOAD
