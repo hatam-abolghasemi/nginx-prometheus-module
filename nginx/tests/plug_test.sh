@@ -89,6 +89,66 @@ start
 [ "$(code http://127.0.0.1:18070/)" = 200 ] && pass "zone off: nginx works" || fail "zone off: nginx"
 stop
 
+# $prometheus_connection_upgrade: the usual upgrade map, built in
+conf 'http { server { listen 127.0.0.1:18070; location / { return 200 "[$prometheus_connection_upgrade]"; } } }'
+start
+[ "$(curl -s http://127.0.0.1:18070/)" = "[]" ] && pass "upgrade variable: no Upgrade" || fail "upgrade variable: no Upgrade"
+[ "$(curl -s -H 'Upgrade: websocket' http://127.0.0.1:18070/)" = "[upgrade]" ] && pass "upgrade variable: Upgrade" || fail "upgrade variable: Upgrade"
+stop
+
+# a config's own map of the usual name doesn't clash with it
+conf 'http { map $http_upgrade $connection_upgrade { default upgrade; "" ""; } server { listen 127.0.0.1:18070; location / { return 200 "[$connection_upgrade]"; } } }'
+start
+[ "$(curl -s -H 'Upgrade: websocket' http://127.0.0.1:18070/)" = "[upgrade]" ] && pass "own upgrade map still works" || fail "own upgrade map"
+stop
+
+# an old hand-copied map to the very name takes it over, no duplicate error
+conf 'http { map $http_upgrade $prometheus_connection_upgrade { default mine; "" ""; } server { listen 127.0.0.1:18070; location / { return 200 "[$prometheus_connection_upgrade]"; } } }'
+start
+[ "$(curl -s -H 'Upgrade: websocket' http://127.0.0.1:18070/)" = "[mine]" ] && pass "a map to the same name wins" || fail "a map to the same name"
+stop
+
+# prometheus_source_ptr alone turns the caller labels on
+conf 'http { access_log off; prometheus_source_ptr 10.0.0.0/8; prometheus_dns 127.0.0.1:15399; server { listen 127.0.0.1:18070; location / { return 200; } } }'
+start
+curl -s -o /dev/null http://127.0.0.1:18070/ptr
+metrics=$(curl -s http://127.0.0.1:9145/metrics)
+printf '%s\n' "$metrics" | grep -qF 'route="/ptr",status="200",host="localhost",mode="0",source_service="public",source_namespace="unknown"' \
+    && pass "source_ptr: caller labels on" || fail "source_ptr: no caller labels"
+stop
+
+# ... and an explicit setting still wins
+conf 'http { access_log off; prometheus_source_ptr 10.0.0.0/8; prometheus_dns 127.0.0.1:15399; prometheus_label source_namespace off; server { listen 127.0.0.1:18070; location / { return 200; } } }'
+start
+curl -s -o /dev/null http://127.0.0.1:18070/ptr
+metrics=$(curl -s http://127.0.0.1:9145/metrics)
+if printf '%s\n' "$metrics" | grep -F 'route="/ptr"' | grep -qF 'source_service="public"' \
+   && ! printf '%s\n' "$metrics" | grep -qF 'source_namespace='; then
+    pass "source_ptr: explicit off wins"
+else
+    fail "source_ptr: explicit off"
+fi
+stop
+
+# no ranges: no caller labels, as before
+conf 'http { access_log off; server { listen 127.0.0.1:18070; location / { return 200; } } }'
+start
+curl -s -o /dev/null http://127.0.0.1:18070/plain
+curl -s http://127.0.0.1:9145/metrics | grep -qF 'source_service=' && fail "no ranges: caller labels" || pass "no ranges: no caller labels"
+stop
+
+# in a pod, own identity is on for the labels that use it, and the
+# fallback holds until it's found; explicit off still wins
+conf 'http { access_log off; prometheus_label app on; prometheus_identity_fallback fb fbns; prometheus_dns 127.0.0.1:15399; server { listen 127.0.0.1:18070; location / { return 200; } } }'
+env KUBERNETES_SERVICE_HOST=10.0.0.1 "$NGINX" -p "$PREFIX" -c conf/nginx.conf; sleep 0.5
+curl -s -o /dev/null http://127.0.0.1:18070/pod
+curl -s http://127.0.0.1:9145/metrics | grep -qF 'route="/pod",status="200",host="localhost",app="fb"' \
+    && pass "in a pod: identity default, fallback" || fail "in a pod: identity default"
+stop
+conf 'http { access_log off; prometheus_identity off; prometheus_label app on; server { listen 127.0.0.1:18070; location / { return 200; } } }'
+env KUBERNETES_SERVICE_HOST=10.0.0.1 "$NGINX" -p "$PREFIX" -c conf/nginx.conf -t -q 2>/dev/null \
+    && pass "in a pod: explicit identity off" || fail "in a pod: explicit identity off"
+
 # no http{} at all
 conf ''
 start

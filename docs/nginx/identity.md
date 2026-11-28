@@ -5,7 +5,7 @@ Four labels that turn "a request" into "a request from `cart` in `shop` to
 
 | Label | Answers | Default |
 |---|---|---|
-| `source_service`, `source_namespace` | Which Service and namespace sent this request | off |
+| `source_service`, `source_namespace` | Which Service and namespace sent this request | on once `prometheus_source_ptr` is set, off otherwise |
 | `app`, `namespace` | Which Service and namespace this nginx is | off |
 | `client_subnet` | Roughly where the client is, without one series per IP | off |
 
@@ -57,20 +57,23 @@ the pod's own, from `/etc/resolv.conf`.
 
 ```nginx
 http {
-    prometheus_label source_service on;
-    prometheus_label source_namespace on;
+    # source_service / source_namespace on, and (in a pod) own identity on
     prometheus_source_ptr 10.233.0.0/16;                  # the pod CIDR
 
     # optional: known ranges outside the cluster, named without DNS
     prometheus_source_static 192.168.104.0/24 internal zone_a;
     prometheus_source_static 192.168.140.0/22 internal zone_b;
 
-    # optional: who this nginx is (needs to run in a pod)
-    prometheus_identity on;
+    # optional: who this nginx is, as labels on every series (in a pod)
     prometheus_label app on;
     prometheus_label namespace on;
 }
 ```
+
+The one line is enough: with a range to name callers in, the caller labels
+default to on, and inside Kubernetes so does
+[own identity](#own-identity), which the outbound leg's caller labels use.
+Any of them set explicitly wins, e.g. `prometheus_label source_namespace off;`.
 
 Every directive with its default: [module.md](README.md#directives).
 
@@ -138,6 +141,11 @@ callers are always its own `app` / `namespace`.
   resolver keeps only the first PTR record.
 
 ## Own identity
+
+**On by default inside Kubernetes** (the kubelet sets `KUBERNETES_SERVICE_HOST`,
+or the service account is mounted) when a label uses it: `app`, `namespace`,
+or the caller labels. Outside a pod, or with none of those labels, it's off;
+`prometheus_identity on|off` overrides either way.
 
 `prometheus_identity on` finds this pod's IP in `/etc/hosts` (the kubelet
 writes `<pod-ip> <pod-name>` there) and resolves it the same way, retrying

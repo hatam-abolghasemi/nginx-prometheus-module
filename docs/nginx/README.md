@@ -169,6 +169,13 @@ http {
 If a server of yours already listens on the built-in port, nginx still starts:
 the module leaves the port to it and says so in the error log.
 
+### Variables
+
+| Variable | |
+|---|---|
+| `$prometheus_connection_upgrade` | `upgrade` when the request has a non-empty `Upgrade` header, empty otherwise: the usual `map $http_upgrade $connection_upgrade`, built in. Use it for WebSockets without a map: `proxy_set_header Connection $prometheus_connection_upgrade;`. A map of your own (any name, `$connection_upgrade` included) keeps working next to it |
+| `$prometheus_intercept_cert`, `$prometheus_intercept_key` | [https interception](interception.md#on-your-own-nginx) |
+
 ## Directives
 
 All `http{}`-level directives apply to the whole nginx; the last three can be
@@ -186,7 +193,7 @@ set per server or location.
 | `prometheus_route_min_len <n>;` | `4` | http | `long_with_digit`: a segment longer than this with a digit in it |
 | `prometheus_route_max_segment_len <n>;` | `64` | http | A segment longer than this is always `$param` |
 | `prometheus_cluster_ip_prefix <prefix>;` | — | http | IPv4 `Host`s starting with it are labelled `kubernetes` (e.g. `10.233.`) |
-| `prometheus_source_ptr <cidr>...;` | — | http | [Caller identity](identity.md): callers in these ranges are named by reverse DNS |
+| `prometheus_source_ptr <cidr>...;` | — | http | [Caller identity](identity.md): callers in these ranges are named by reverse DNS. Turns `source_service` / `source_namespace` on, unless set off |
 | `prometheus_source_static <cidr> <service> <namespace>;` | — | http | Callers in this range get these labels; the longest range wins |
 | `prometheus_source_default <service> <namespace>;` | `public unknown` | http | Callers in no range |
 | `prometheus_source_unresolved <service> <namespace>;` | `health-probe kubernetes` | http | Kubelet probes, and PTR callers with no answer (yet) |
@@ -195,7 +202,7 @@ set per server or location.
 | `prometheus_source_ignore_service <regex>...\|off;` | `-metrics$ -headless$` | http | Services passed over when an address has several PTR records |
 | `prometheus_source_refresh <time>;` | `15s` | http | How often every known caller is resolved again |
 | `prometheus_source_forget <time>;` | `300s` | http | A caller no request has come from for this long is forgotten |
-| `prometheus_identity on\|off;` | `off` | http | Discover this pod's own Service by reverse DNS: the `app` / `namespace` labels |
+| `prometheus_identity on\|off;` | on in a pod when `app`, `namespace` or the caller labels are on; off otherwise | http | Discover this pod's own Service by reverse DNS: the `app` / `namespace` labels, and the outbound leg's caller |
 | `prometheus_identity_fallback <app> <namespace>;` | `unknown` and the service account's namespace | http | `app` / `namespace` until (or unless) discovery succeeds |
 | `prometheus_dns <ip>[:port]\|auto;` | `auto` | http | The DNS server for PTR lookups; `auto` is the first IPv4 `nameserver` in `/etc/resolv.conf` |
 | `prometheus_dns_timeout <time>;` | `2s` | http | One PTR query |
@@ -306,7 +313,7 @@ In this order on every per-request series:
 | `host` | `api.example.com`, `localhost`, `kubernetes`, `$ip`, `checkout` | `$host`, classified: IP literals collapse so each address is not a series; this pod's own IP shows as its own Service | on |
 | `app` / `namespace` | `checkout` / `shop` | [own identity](identity.md#own-identity) | off |
 | `mode` | `0` | `prometheus_mode` | on |
-| `source_service` / `source_namespace` | `cart` / `shop` | [caller identity](identity.md) | off |
+| `source_service` / `source_namespace` | `cart` / `shop` | [caller identity](identity.md) | on with `prometheus_source_ptr`, else off |
 | `protocol` | `http`, `https`, `grpc`, `grpcs`, `tunnel` | the connection's TLS, gRPC by `Content-Type`, `tunnel` for CONNECT | on |
 
 Turn any of them on or off with `prometheus_label <name> on|off;`.

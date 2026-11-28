@@ -117,6 +117,23 @@ ngx_prom_cidr_arg(ngx_conf_t *cf, ngx_str_t *v, ngx_prom_cidr_t *range)
 }
 
 
+/* a pod: the kubelet sets KUBERNETES_SERVICE_HOST, or mounts the token */
+
+static ngx_flag_t
+ngx_prom_in_kubernetes(void)
+{
+    ngx_file_info_t  fi;
+
+    if (getenv("KUBERNETES_SERVICE_HOST") != NULL) {
+        return 1;
+    }
+
+    return ngx_file_info("/var/run/secrets/kubernetes.io/serviceaccount", &fi)
+           != NGX_FILE_ERROR
+           && ngx_is_dir(&fi);
+}
+
+
 void
 ngx_prom_source_create_conf(ngx_prom_source_conf_t *conf)
 {
@@ -382,7 +399,17 @@ ngx_prom_source_init_conf(ngx_conf_t *cf,
     sc->enabled = pmcf->label[NGX_PROM_L_SOURCE_SERVICE]
                   || pmcf->label[NGX_PROM_L_SOURCE_NAMESPACE];
 
-    ngx_conf_init_value(sc->identity, 0);
+    /*
+     * Own identity defaults to on inside Kubernetes, when a label needs it:
+     * app / namespace, or the caller labels (the outbound leg's caller is
+     * this pod). Outside Kubernetes there is no Service to find.
+     */
+
+    ngx_conf_init_value(sc->identity,
+                        ngx_prom_in_kubernetes()
+                        && (sc->enabled
+                            || pmcf->label[NGX_PROM_L_APP]
+                            || pmcf->label[NGX_PROM_L_NAMESPACE]));
     ngx_conf_init_msec_value(sc->dns_timeout, 2000);
     ngx_conf_init_msec_value(sc->refresh, 15000);
     ngx_conf_init_msec_value(sc->forget, 300000);

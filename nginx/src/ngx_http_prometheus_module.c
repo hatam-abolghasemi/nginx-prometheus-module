@@ -174,6 +174,9 @@ typedef struct {
     (2 * ((NGX_PROM_MAX_BUCKETS + 1) * sizeof(uint64_t) + sizeof(double)))
 
 
+static ngx_int_t ngx_http_prometheus_add_variables(ngx_conf_t *cf);
+static ngx_int_t ngx_http_prometheus_connection_upgrade(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data);
 static ngx_int_t ngx_http_prometheus_init(ngx_conf_t *cf);
 static void *ngx_http_prometheus_create_main_conf(ngx_conf_t *cf);
 static char *ngx_http_prometheus_init_main_conf(ngx_conf_t *cf, void *conf);
@@ -396,7 +399,7 @@ static ngx_command_t  ngx_http_prometheus_commands[] = {
 
 
 static ngx_http_module_t  ngx_http_prometheus_module_ctx = {
-    NULL,                                  /* preconfiguration */
+    ngx_http_prometheus_add_variables,     /* preconfiguration */
     ngx_http_prometheus_init,              /* postconfiguration */
 
     ngx_http_prometheus_create_main_conf,  /* create main configuration */
@@ -424,6 +427,64 @@ ngx_module_t  ngx_http_prometheus_module = {
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+
+/* variables */
+
+/*
+ * $prometheus_connection_upgrade: "upgrade" when the request has a non-empty
+ * Upgrade header, "" otherwise. What the usual
+ * "map $http_upgrade $connection_upgrade" gives, without a map that could
+ * clash with one of the same name in the user's config. Changeable: a map
+ * of the user's to this very name (an older sidecar.conf copied by hand)
+ * takes it over instead of failing as a duplicate.
+ *
+ *     proxy_set_header  Upgrade     $http_upgrade;
+ *     proxy_set_header  Connection  $prometheus_connection_upgrade;
+ */
+
+static ngx_int_t
+ngx_http_prometheus_add_variables(ngx_conf_t *cf)
+{
+    ngx_http_variable_t  *var;
+
+    static ngx_str_t  name = ngx_string("prometheus_connection_upgrade");
+
+    var = ngx_http_add_variable(cf, &name, NGX_HTTP_VAR_CHANGEABLE
+                                           |NGX_HTTP_VAR_NOCACHEABLE);
+    if (var == NULL) {
+        return NGX_ERROR;
+    }
+
+    var->get_handler = ngx_http_prometheus_connection_upgrade;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_prometheus_connection_upgrade(ngx_http_request_t *r,
+    ngx_http_variable_value_t *v, uintptr_t data)
+{
+    ngx_table_elt_t  *h;
+
+    h = r->headers_in.upgrade;
+
+    v->valid = 1;
+    v->no_cacheable = 0;
+    v->not_found = 0;
+
+    if (h == NULL || h->value.len == 0) {
+        v->len = 0;
+        v->data = (u_char *) "";
+        return NGX_OK;
+    }
+
+    v->len = sizeof("upgrade") - 1;
+    v->data = (u_char *) "upgrade";
+
+    return NGX_OK;
+}
 
 
 /* configuration */
@@ -486,6 +547,16 @@ ngx_http_prometheus_init_main_conf(ngx_conf_t *cf, void *conf)
 
     for (i = 0; i < NGX_PROM_M_COUNT; i++) {
         ngx_conf_init_value(pmcf->metric[i], ngx_prom_metrics[i].on);
+    }
+
+    /*
+     * Ranges to name callers in mean the caller labels are wanted: they
+     * default to on once prometheus_source_ptr is set.
+     */
+
+    if (pmcf->source.ptr_ranges) {
+        ngx_conf_init_value(pmcf->label[NGX_PROM_L_SOURCE_SERVICE], 1);
+        ngx_conf_init_value(pmcf->label[NGX_PROM_L_SOURCE_NAMESPACE], 1);
     }
 
     for (i = 0; i < NGX_PROM_L_COUNT; i++) {
