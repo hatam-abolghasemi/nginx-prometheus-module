@@ -10,7 +10,8 @@
 # and plaintext, through the two terminators, unary and streaming, with the
 # status from grpc-status (trailers, or headers for a trailers-only answer).
 #
-# Ports: 18070 (TLS origin), 18071 (plain origin), 18072 / 18073 (gRPC origin,
+# Ports: 18070 (TLS origin), 18071 (plain origin), 18074 (TLS origin, a CA
+# outside the trusted bundle), 18072 / 18073 (gRPC origin,
 # TLS / plaintext), 15353 (DNS), 13128 (the proxy), 13129 (the TLS
 # terminator; the h2c one is a unix socket), 19152.
 
@@ -57,6 +58,18 @@ printf 'subjectAltName=DNS:a.test,DNS:b.test,IP:127.0.0.1,IP:::1\n' > "$C/ext"
 openssl x509 -req -in "$C/o.csr" -CA "$C/pca.crt" -CAkey "$C/pca.key" \
     -CAcreateserial -days 1 -extfile "$C/ext" -out "$C/o.crt" 2> /dev/null
 
+# destinations are verified on demand (prometheus_intercept_trusted): a bundle
+# with the public CA among others, readable by root only (the workers use the
+# master's open file), and a CA that isn't in it for a destination to refuse
+ec -x509 -days 1 -subj /CN=anchor-ca -keyout "$C/anchor.key" -out "$C/anchor.crt"
+ec -x509 -days 1 -subj /CN=other-ca -keyout "$C/other.key" -out "$C/other.crt"
+ec -x509 -days 1 -subj /CN=rogue-ca -keyout "$C/rca.key" -out "$C/rca.crt"
+cat "$C/anchor.crt" "$C/other.crt" "$C/pca.crt" > "$C/bundle.crt"
+chmod 600 "$C/bundle.crt"
+ec -subj /CN=rogue -keyout "$C/r.key" -out "$C/r.csr"
+openssl x509 -req -in "$C/r.csr" -CA "$C/rca.crt" -CAkey "$C/rca.key" \
+    -CAcreateserial -days 1 -extfile "$C/ext" -out "$C/r.crt" 2> /dev/null
+
 python3 "$HERE/fake_a_dns.py" 15353 &
 dns=$!
 
@@ -82,6 +95,7 @@ http {
     access_log off;
     prometheus_listen 19152;
     prometheus_intercept_ca $C/ca.crt $C/ca.key;
+    prometheus_intercept_trusted $C/bundle.crt;
     resolver 127.0.0.1:15353 ipv6=off valid=10s;
 
     server {
@@ -100,6 +114,14 @@ http {
         http2 on;
         prometheus_record off;
         location / { return 200 "plain \$request_uri c=\$connection\n"; }
+    }
+
+    server {
+        listen 127.0.0.1:18074 ssl;
+        ssl_certificate $C/r.crt;
+        ssl_certificate_key $C/r.key;
+        prometheus_record off;
+        location / { return 200 "rogue\n"; }
     }
 
     server {
@@ -128,11 +150,11 @@ http {
         proxy_ssl_server_name on;
         proxy_ssl_name \$host;
         proxy_ssl_verify on;
-        proxy_ssl_trusted_certificate $C/pca.crt;
+        proxy_ssl_trusted_certificate $C/anchor.crt;
         grpc_ssl_server_name on;
         grpc_ssl_name \$host;
         grpc_ssl_verify on;
-        grpc_ssl_trusted_certificate $C/pca.crt;
+        grpc_ssl_trusted_certificate $C/anchor.crt;
         location / {
             if (\$content_type ~* "^application/grpc(\$|[+;\s])") {
                 grpc_pass grpcs://prometheus_intercept_grpcs;
@@ -185,6 +207,10 @@ b3=$(px --cacert "$C/ca.crt" https://b.test:18070/k/3 | sed 's/.*c=\([0-9]*\).*/
 # a name the destination's certificate doesn't have: refused, not reused
 code=$(px --cacert "$C/ca.crt" -o /dev/null -w '%{http_code}' https://c.test:18070/x)
 [ "$code" = 502 ] && pass "an unverified destination is a 502" || fail "c.test: $code"
+
+# a certificate from a CA the bundle doesn't have: refused
+code=$(px --cacert "$C/ca.crt" -o /dev/null -w '%{http_code}' https://a.test:18074/rogue)
+[ "$code" = 502 ] && pass "a CA outside the trusted bundle is a 502" || fail "rogue CA: $code"
 
 # HTTP/2 inside TLS, and an IP literal (no SNI)
 body=$(px --cacert "$C/ca.crt" --http2 https://127.0.0.1:18070/h2)
