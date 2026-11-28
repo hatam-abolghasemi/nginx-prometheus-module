@@ -13,6 +13,55 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+## v2.8.2 — 2026-11-28
+
+### 2026-11-28
+
+- **Alpine slim images.** `ghcr.io/hatam-abolghasemi/nginx` and the module
+  package are now built for `alpine-slim` too (`1.31.10-alpine-slim`,
+  `1.31-alpine-slim`, `mainline-alpine-slim`, `alpine-slim`), and every
+  flavor carries upstream's aliases for it, the tags Docker Hub has under the
+  same digest: `1.31.10-trixie`, `mainline-trixie`, `trixie` for the plain
+  (Debian) tag, `1.31.10-alpine3.24`, `1.31.10-alpine3.24-slim`,
+  `alpine3.24-slim`, ... for Alpine. Slim runs the same nginx as alpine, so the release's
+  musl `.so` files are the same ones ([docs/images.md](docs/images.md#nginx)).
+- **nginx `latest` is Debian now, as upstream's** (it was Alpine). For
+  `ghcr.io/hatam-abolghasemi/nginx` and the module package: `latest` =
+  `mainline` = the plain tag; `alpine` stays Alpine. If you pull `:latest`
+  and build on it with `apk`, or copy the module's musl `.so` from it, switch
+  to `:alpine`. The OpenResty image's `latest` stays Alpine.
+- **Caller labels follow `prometheus_source_ptr`.** With a range to name
+  callers in, `source_service` / `source_namespace` default to on; one line
+  instead of three. An explicit `prometheus_label ... off` still wins.
+  Configs that set no range are unchanged.
+- **Own identity is on by default in a pod** (`KUBERNETES_SERVICE_HOST`, or a
+  mounted service account) when a label uses it: `app`, `namespace` or the
+  caller labels. `prometheus_identity on|off` still overrides. Outside
+  Kubernetes, or with none of those labels, nothing changes.
+- **`$prometheus_connection_upgrade`**, built in: `upgrade` when the request
+  has an `Upgrade` header, empty otherwise — the usual
+  `map $http_upgrade $connection_upgrade` without the map. A map of your own
+  under any name keeps working. The image's sidecar uses it instead of its own
+  map.
+- **Outbound without `APP_PORT`.** On your own config (a FastCGI app's, where
+  the sidecar's HTTP `:80` doesn't fit), `OUTBOUND=on` or `INTERCEPT_TLS=on`
+  makes the image write the forward proxy and the interception terminators to
+  `conf.d/prometheus-outbound.conf`, with the pod's DNS and the CA watcher,
+  and leaves `default.conf` alone. Without either variable, nothing changes
+  ([docs/nginx/sidecar.md](docs/nginx/sidecar.md#your-own-config-outbound-only)).
+- **`OUTBOUND_TIMEOUT`** (default `300s`, as before): how long the generated
+  outbound side waits on a quiet destination — the proxy, gRPC and tunnel
+  read/send timeouts and a relayed tunnel's idle time. Inbound keeps its own
+  `300s`.
+- **On upstream's own image, no build:** a recipe for running
+  `nginx:<version>-alpine-slim` itself, with the module and the entrypoint
+  script copied in by an init container from the image of the same version
+  ([docs/nginx/sidecar.md](docs/nginx/sidecar.md#on-upstreams-own-image-no-build)).
+  The script now creates `/etc/nginx/main.d` for `STREAM` when it's missing,
+  as on upstream's image.
+- **Docs:** mount the interception CA Secret as a directory; files mounted
+  with `subPath` are never updated, so a rotated CA wouldn't reach nginx.
+
 ## v2.8.1 — 2026-11-27
 
 ### 2026-11-27
