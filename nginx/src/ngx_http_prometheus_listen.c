@@ -106,6 +106,15 @@ ngx_prom_listen_close(ngx_connection_t *c)
 {
     ngx_pool_t  *pool;
 
+    /*
+     * The accept counted this connection as active, as for any listener;
+     * http and stream take it back when they close theirs, so this one must
+     * too, or every scrape would add one to "active" (and to stub_status).
+     */
+#if (NGX_STAT_STUB)
+    (void) ngx_atomic_fetch_add(ngx_stat_active, -1);
+#endif
+
     pool = c->pool;
     ngx_close_connection(c);
     ngx_destroy_pool(pool);

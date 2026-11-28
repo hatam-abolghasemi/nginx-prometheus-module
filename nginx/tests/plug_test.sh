@@ -47,6 +47,11 @@ ct=$(curl -s -o /dev/null -w '%{content_type}' http://127.0.0.1:9145/metrics)
 case $ct in "text/plain; version=0.0.4"*) pass "content type" ;; *) fail "content type: $ct" ;; esac
 if printf '%s\n' "$metrics" | grep -qF ':9145'; then fail "scrapes recorded"; else pass "scrapes not recorded"; fi
 
+# scrapes don't count as active connections once they're closed
+i=0; while [ $i -lt 20 ]; do curl -s -o /dev/null http://127.0.0.1:9145/metrics; i=$((i + 1)); done
+active=$(curl -s http://127.0.0.1:9145/metrics | sed -n 's/^nginx_http_connections{state="active"} //p')
+[ "${active:-99}" -le 2 ] && pass "scrapes don't leak active connections ($active)" || fail "active after 20 scrapes: $active"
+
 # a slow, partial request times out without hurting anything
 ( printf 'GET /met' ; sleep 1 ) | nc -q 2 127.0.0.1 9145 > /dev/null 2>&1 || true
 [ "$(curl -s http://127.0.0.1:9145/healthz)" = "ok" ] && pass "partial request" || fail "partial request"
