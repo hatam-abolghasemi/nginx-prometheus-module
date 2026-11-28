@@ -212,6 +212,10 @@ intercept() {
 # on over verified TLS, on connections kept per destination name.
 prometheus_intercept_ca  $2 $3;
 
+# destinations are verified against the trusted bundle, read one CA at a time
+# as needed; proxy_ssl_verify still wants a trusted file: one CA of the bundle
+prometheus_intercept_trusted  $4;
+
 upstream prometheus_intercept_https { server 0.0.0.1; prometheus_intercept_origin 256; }
 upstream prometheus_intercept_grpcs { server 0.0.0.1; prometheus_intercept_origin 256; }
 upstream prometheus_intercept_grpc  { server 0.0.0.1; prometheus_intercept_origin 256; }
@@ -235,13 +239,13 @@ server {
     proxy_ssl_name                 \$host;
     proxy_ssl_verify               on;
     proxy_ssl_verify_depth         3;
-    proxy_ssl_trusted_certificate  $4;
+    proxy_ssl_trusted_certificate  $5;
 
     grpc_ssl_server_name           on;
     grpc_ssl_name                  \$host;
     grpc_ssl_verify                on;
     grpc_ssl_verify_depth          3;
-    grpc_ssl_trusted_certificate   $4;
+    grpc_ssl_trusted_certificate   $5;
 
     client_max_body_size  0;
 EOF
@@ -500,6 +504,16 @@ if [ "${OUTBOUND:-on}" != "off" ]; then
                 exit 1
             else
                 icept=1
+
+                # its first certificate, for proxy_ssl_trusted_certificate:
+                # trust stays the bundle's (prometheus_intercept_trusted)
+                anchor=${conf%/*}/prometheus-intercept-anchor.crt
+                if ! sed -n '/^-----BEGIN CERTIFICATE-----/,/^-----END CERTIFICATE-----/{p;/^-----END CERTIFICATE-----/q;}' \
+                         "$trusted" > "$anchor" 2> /dev/null \
+                   || ! [ -s "$anchor" ]
+                then
+                    anchor=$trusted   # no plain PEM block: the whole bundle, as before
+                fi
             fi
         fi
 
@@ -507,7 +521,7 @@ if [ "${OUTBOUND:-on}" != "off" ]; then
             | sed "s/@OUTBOUND_TIMEOUT@/$out_timeout/g" >> "$conf"
 
         if [ -n "$icept" ]; then
-            intercept "$dns" "$ca_cert" "$ca_key" "$trusted" \
+            intercept "$dns" "$ca_cert" "$ca_key" "$trusted" "$anchor" \
                 | sed "s/@OUTBOUND_TIMEOUT@/$out_timeout/g" >> "$conf"
             said=", outbound on 127.0.0.1:3128 with https interception"
             [ -n "$bypass" ] && said="$said (bypassed:$bypass)"
