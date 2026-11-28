@@ -6,6 +6,8 @@
  *   prometheus_intercept_ca <crt> <key>;   http{}: the CA leaf certs are minted from
  *   $prometheus_intercept_cert / _key      the leaf for this connection's name,
  *                                          for ssl_certificate data:$...
+ *   prometheus_intercept_trusted <bundle>; http{}: the CAs destinations are
+ *                                          verified against, read on demand
  *
  * prometheus_intercept_connect answers "200 Connection Established" first and
  * reads the bytes the client sends into the tunnel. Their first bytes say what
@@ -40,9 +42,12 @@
 #define NGX_PROM_MINT_CACHE      512
 
 
+typedef struct ngx_prom_trust_s  ngx_prom_trust_t;
+
 typedef struct {
     ngx_str_t                  ca_cert;
     ngx_str_t                  ca_key;
+    ngx_prom_trust_t          *trust;
 } ngx_prom_intercept_main_conf_t;
 
 
@@ -82,6 +87,8 @@ static char *ngx_prom_intercept_connect(ngx_conf_t *cf, ngx_command_t *cmd,
 static char *ngx_prom_intercept_ca(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static char *ngx_prom_intercept_origin(ngx_conf_t *cf, ngx_command_t *cmd,
+    void *conf);
+static char *ngx_prom_intercept_trusted(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
 static ngx_int_t ngx_prom_intercept_postconf(ngx_conf_t *cf);
 static ngx_int_t ngx_prom_intercept_init_worker(ngx_cycle_t *cycle);
@@ -128,6 +135,13 @@ static ngx_command_t  ngx_prom_intercept_commands[] = {
     { ngx_string("prometheus_intercept_ca"),
       NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE2,
       ngx_prom_intercept_ca,
+      NGX_HTTP_MAIN_CONF_OFFSET,
+      0,
+      NULL },
+
+    { ngx_string("prometheus_intercept_trusted"),
+      NGX_HTTP_MAIN_CONF|NGX_CONF_TAKE1,
+      ngx_prom_intercept_trusted,
       NGX_HTTP_MAIN_CONF_OFFSET,
       0,
       NULL },
@@ -1047,6 +1061,186 @@ ngx_prom_origin_save_session(ngx_peer_connection_t *pc, void *data)
 #endif
 
 
+/* ------------------------------------------------------- on-demand trust */
+
+#if (NGX_HTTP_SSL)
+
+/*
+ * prometheus_intercept_trusted <bundle>: the CAs destinations are verified
+ * against, without holding the bundle in memory.
+ *
+ * proxy_ssl_trusted_certificate parses every certificate of a bundle at
+ * start and keeps them all: ~0.7 MB for the ~120 CAs of a system bundle, to
+ * verify the handful of destinations an app actually calls. Here the master
+ * reads the bundle once, one certificate at a time, and keeps an index of it
+ * only: the subject hash, offset and length of each certificate (24 bytes
+ * apiece), and the open file. The workers add an X509_LOOKUP to the trust
+ * store of the upstream TLS contexts that use it: when a verification looks
+ * for an issuer the store doesn't hold yet, the certificates with that
+ * subject are read from the bundle and added to the store, where they stay.
+ *
+ * nginx's own verification is unchanged (proxy_ssl_verify, the name check,
+ * the depth); only where the store finds issuers is. proxy_ssl_verify still
+ * needs a proxy_ssl_trusted_certificate: any certificate of the same bundle
+ * keeps the trust the same.
+ *
+ * The file stays open from the master, so workers read it whatever their
+ * user, and a bundle replaced on disk is seen at the next reload, whole.
+ */
+
+typedef struct {
+    unsigned long              hash;
+    off_t                      offset;
+    size_t                     len;
+} ngx_prom_trust_entry_t;
+
+
+struct ngx_prom_trust_s {
+    ngx_fd_t                   fd;
+    ngx_str_t                  name;
+    ngx_uint_t                 nelts;
+    ngx_prom_trust_entry_t    *entries;
+};
+
+
+static X509_LOOKUP_METHOD  *ngx_prom_trust_method;
+
+
+static X509 *
+ngx_prom_trust_read(ngx_prom_trust_t *t, ngx_prom_trust_entry_t *e)
+{
+    u_char   *buf;
+    BIO      *bio;
+    X509     *x;
+    ssize_t   n;
+
+    buf = ngx_alloc(e->len, ngx_cycle->log);
+    if (buf == NULL) {
+        return NULL;
+    }
+
+    n = pread(t->fd, buf, e->len, e->offset);
+
+    if (n != (ssize_t) e->len) {
+        ngx_log_error(NGX_LOG_ALERT, ngx_cycle->log, n == -1 ? ngx_errno : 0,
+                      "prometheus_intercept_trusted: cannot read \"%V\" "
+                      "at %O", &t->name, e->offset);
+        ngx_free(buf);
+        return NULL;
+    }
+
+    x = NULL;
+
+    bio = BIO_new_mem_buf(buf, (int) n);
+    if (bio) {
+        x = PEM_read_bio_X509_AUX(bio, NULL, NULL, NULL);
+        BIO_free(bio);
+    }
+
+    ngx_free(buf);
+
+    if (x == NULL) {
+        ngx_ssl_error(NGX_LOG_ALERT, ngx_cycle->log, 0,
+                      "prometheus_intercept_trusted: cannot parse \"%V\" "
+                      "at %O", &t->name, e->offset);
+    }
+
+    return x;
+}
+
+
+#if (OPENSSL_VERSION_NUMBER >= 0x30000000L)
+#define ngx_prom_const_name  const X509_NAME
+#else
+#define ngx_prom_const_name  X509_NAME
+#endif
+
+static int
+ngx_prom_trust_by_subject(X509_LOOKUP *lu, X509_LOOKUP_TYPE type,
+    ngx_prom_const_name *name, X509_OBJECT *ret)
+{
+    X509               *x;
+    ngx_uint_t          i, found;
+    unsigned long       hash;
+    ngx_prom_trust_t   *t;
+
+    t = X509_LOOKUP_get_method_data(lu);
+
+    if (t == NULL || type != X509_LU_X509) {
+        return 0;
+    }
+
+    hash = X509_NAME_hash((X509_NAME *) name);
+    found = 0;
+
+    /* every certificate with this subject: a CA can be in a bundle twice */
+
+    for (i = 0; i < t->nelts; i++) {
+
+        if (t->entries[i].hash != hash) {
+            continue;
+        }
+
+        x = ngx_prom_trust_read(t, &t->entries[i]);
+        if (x == NULL) {
+            continue;
+        }
+
+        if (X509_NAME_cmp(X509_get_subject_name(x), name) == 0
+            && X509_STORE_add_cert(X509_LOOKUP_get_store(lu), x) == 1)
+        {
+            if (!found && X509_OBJECT_set1_X509(ret, x) == 1) {
+                found = 1;
+            }
+        }
+
+        X509_free(x);
+    }
+
+    ERR_clear_error();
+
+    return found;
+}
+
+
+static void
+ngx_prom_trust_attach(ngx_prom_trust_t *t, SSL_CTX *ctx, ngx_log_t *log)
+{
+    X509_LOOKUP  *lu;
+
+    if (ngx_prom_trust_method == NULL) {
+        ngx_prom_trust_method =
+                      X509_LOOKUP_meth_new("prometheus_intercept_trusted");
+
+        if (ngx_prom_trust_method == NULL
+            || X509_LOOKUP_meth_set_get_by_subject(ngx_prom_trust_method,
+                                              ngx_prom_trust_by_subject) != 1)
+        {
+            ngx_ssl_error(NGX_LOG_ALERT, log, 0,
+                          "prometheus_intercept_trusted: no lookup method");
+            return;
+        }
+    }
+
+    /* the store's lookup of this method: added once, then found again */
+    lu = X509_STORE_add_lookup(SSL_CTX_get_cert_store(ctx),
+                               ngx_prom_trust_method);
+
+    if (lu == NULL) {
+        ngx_ssl_error(NGX_LOG_ALERT, log, 0,
+                      "prometheus_intercept_trusted: X509_STORE_add_lookup() "
+                      "failed");
+        return;
+    }
+
+    if (X509_LOOKUP_get_method_data(lu) == NULL) {
+        X509_LOOKUP_set_method_data(lu, (char *) t);
+    }
+}
+
+#endif
+
+
 static ngx_int_t
 ngx_prom_origin_init_peer(ngx_http_request_t *r,
     ngx_http_upstream_srv_conf_t *us)
@@ -1086,6 +1280,22 @@ ngx_prom_origin_init_peer(ngx_http_request_t *r,
 
         conf->ready = 1;
     }
+
+#if (NGX_HTTP_SSL)
+    {
+    ngx_prom_intercept_main_conf_t  *imcf;
+
+    imcf = ngx_http_get_module_main_conf(r,
+                                         ngx_http_prometheus_intercept_module);
+
+    if (imcf->trust && r->upstream->conf->ssl
+        && r->upstream->conf->ssl->ctx)
+    {
+        ngx_prom_trust_attach(imcf->trust, r->upstream->conf->ssl->ctx,
+                              r->connection->log);
+    }
+    }
+#endif
 
     op = ngx_palloc(r->pool, sizeof(ngx_prom_origin_peer_t));
     if (op == NULL) {
@@ -1914,4 +2124,143 @@ ngx_prom_intercept_ca(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 #endif
 
     return NGX_CONF_OK;
+}
+
+
+static char *
+ngx_prom_intercept_trusted(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
+{
+#if !(NGX_HTTP_SSL)
+    return "needs nginx built with ssl";
+#else
+    ngx_prom_intercept_main_conf_t  *imcf = conf;
+
+    BIO                     *bio;
+    X509                    *x;
+    long                     at;
+    ngx_str_t               *value, name;
+    ngx_array_t              entries;
+    ngx_prom_trust_t        *t;
+    ngx_pool_cleanup_t      *cln;
+    ngx_pool_cleanup_file_t *clnf;
+    ngx_prom_trust_entry_t  *e;
+
+    if (imcf->trust) {
+        return "is duplicate";
+    }
+
+    value = cf->args->elts;
+    name = value[1];
+
+    if (ngx_conf_full_name(cf->cycle, &name, 1) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    name.data = (u_char *) ngx_pstrdup0(cf->pool, &name);
+    if (name.data == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    if (ngx_array_init(&entries, cf->temp_pool, 128,
+                       sizeof(ngx_prom_trust_entry_t))
+        != NGX_OK)
+    {
+        return NGX_CONF_ERROR;
+    }
+
+    bio = BIO_new_file((char *) name.data, "r");
+    if (bio == NULL) {
+        ngx_ssl_error(NGX_LOG_EMERG, cf->log, 0,
+                      "prometheus_intercept_trusted: cannot open \"%s\"",
+                      name.data);
+        return NGX_CONF_ERROR;
+    }
+
+    /* one certificate at a time: only its hash and place are kept */
+
+    for ( ;; ) {
+        at = BIO_tell(bio);
+
+        x = PEM_read_bio_X509_AUX(bio, NULL, NULL, NULL);
+        if (x == NULL) {
+            break;
+        }
+
+        e = ngx_array_push(&entries);
+        if (e == NULL) {
+            X509_free(x);
+            BIO_free(bio);
+            return NGX_CONF_ERROR;
+        }
+
+        e->hash = X509_NAME_hash(X509_get_subject_name(x));
+        e->offset = at;
+        e->len = BIO_tell(bio) - at;
+
+        X509_free(x);
+    }
+
+    BIO_free(bio);
+
+    /* the end of the file, or a block that isn't a certificate */
+
+    if (ERR_GET_REASON(ERR_peek_last_error()) != PEM_R_NO_START_LINE) {
+        ngx_ssl_error(NGX_LOG_EMERG, cf->log, 0,
+                      "prometheus_intercept_trusted: cannot read \"%s\" "
+                      "after %ui certificates", name.data, entries.nelts);
+        return NGX_CONF_ERROR;
+    }
+
+    ERR_clear_error();
+
+    if (entries.nelts == 0) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
+                           "prometheus_intercept_trusted: no certificates "
+                           "in \"%s\"", name.data);
+        return NGX_CONF_ERROR;
+    }
+
+    t = ngx_pcalloc(cf->pool, sizeof(ngx_prom_trust_t));
+    if (t == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    t->entries = ngx_pnalloc(cf->pool,
+                             entries.nelts * sizeof(ngx_prom_trust_entry_t));
+    if (t->entries == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    ngx_memcpy(t->entries, entries.elts,
+               entries.nelts * sizeof(ngx_prom_trust_entry_t));
+    t->nelts = entries.nelts;
+    t->name = name;
+
+    /* kept open: the workers read it whatever their user */
+
+    cln = ngx_pool_cleanup_add(cf->pool, sizeof(ngx_pool_cleanup_file_t));
+    if (cln == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    t->fd = ngx_open_file(name.data, NGX_FILE_RDONLY, NGX_FILE_OPEN, 0);
+
+    if (t->fd == NGX_INVALID_FILE) {
+        ngx_conf_log_error(NGX_LOG_EMERG, cf, ngx_errno,
+                           ngx_open_file_n " \"%s\" failed", name.data);
+        return NGX_CONF_ERROR;
+    }
+
+    (void) fcntl(t->fd, F_SETFD, FD_CLOEXEC);
+
+    cln->handler = ngx_pool_cleanup_file;
+    clnf = cln->data;
+    clnf->fd = t->fd;
+    clnf->name = name.data;
+    clnf->log = cf->log;
+
+    imcf->trust = t;
+
+    return NGX_CONF_OK;
+#endif
 }
