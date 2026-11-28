@@ -96,7 +96,7 @@ jobs:
           done
           [ -n "$latest" ] || { echo "::error::no $BASE_IMAGE image on Docker Hub for any of the newest releases"; exit 1; }
           tag="${REQUESTED_TAG:-$latest}"
-          if ! printf '%s' "$tag" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$'; then
+          if ! printf '%s' "$tag" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+-[0-9]+$' > /dev/null; then
             echo "::error::'$tag' is not a <openresty-version>-<revision> tag"
             exit 1
           fi
@@ -240,24 +240,24 @@ jobs:
 
           metrics=$(probe http://127.0.0.1:9145/metrics)
           echo "$metrics" | grep -E '^nginx_http_requests_total'
-          echo "$metrics" | grep -q 'mode="0"'
-          echo "$metrics" | grep -q 'method="CONNECT".*mode="1".*protocol="tunnel"'
-          echo "$metrics" | grep -q 'mode="0".*protocol="http"'
-          echo "$metrics" | grep -q '^nginx_http_connections{state="active"'
-          echo "$metrics" | grep -q 'source_service="health-probe",source_namespace="kubernetes"'
+          echo "$metrics" | grep 'mode="0"' > /dev/null
+          echo "$metrics" | grep 'method="CONNECT".*mode="1".*protocol="tunnel"' > /dev/null
+          echo "$metrics" | grep 'mode="0".*protocol="http"' > /dev/null
+          echo "$metrics" | grep '^nginx_http_connections{state="active"' > /dev/null
+          echo "$metrics" | grep 'source_service="health-probe",source_namespace="kubernetes"' > /dev/null
           # worker_connections (1024, docker/nginx.conf) x worker_processes (1)
-          echo "$metrics" | grep -Eq '^nginx_connection_slots_limit\{.*\} 1024$'
-          echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
+          echo "$metrics" | grep -E '^nginx_connection_slots_limit\{.*\} 1024$' > /dev/null
+          echo "$metrics" | grep -x 'nginx_metric_errors_total 0' > /dev/null
           # defaults: histograms off, no access log, interception not loaded
-          if echo "$metrics" | grep -q '_histogram_bucket'; then
+          if echo "$metrics" | grep '_histogram_bucket' > /dev/null; then
             echo "::error::a histogram is on by default"
             exit 1
           fi
-          if docker logs smoke-nginx 2>&1 | grep -q '"GET / HTTP'; then
+          if docker logs smoke-nginx 2>&1 | grep '"GET / HTTP' > /dev/null; then
             echo "::error::access log is on by default"
             exit 1
           fi
-          if docker exec smoke-nginx nginx -T 2>/dev/null | grep -q '127.0.0.1:3129'; then
+          if docker exec smoke-nginx nginx -T 2>/dev/null | grep '127.0.0.1:3129' > /dev/null; then
             echo "::error::intercept.conf is loaded with INTERCEPT_TLS unset"
             exit 1
           fi
@@ -276,15 +276,15 @@ jobs:
             -v "$ca/ca.crt:/etc/nginx/intercept/ca.crt:ro" \
             -v "$ca/ca.key:/etc/nginx/intercept/ca.key:ro" \
             openresty-prometheus:smoke
-          docker exec smoke-intercept nginx -T 2>/dev/null | grep -q '127.0.0.1:3129'
+          docker exec smoke-intercept nginx -T 2>/dev/null | grep '127.0.0.1:3129' > /dev/null
           probe() { docker run --rm --network container:smoke-intercept -v "$ca/ca.crt:/ca.crt:ro" curlimages/curl -sS --retry 10 --retry-connrefused --retry-delay 1 -m 15 "$@"; }
 
           [ "$(probe --cacert /ca.crt -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 https://example.com/)" = "200" ]
 
           metrics=$(probe http://127.0.0.1:9145/metrics)
           echo "$metrics" | grep 'host="example.com"'
-          echo "$metrics" | grep -q 'method="GET",route="/",status="200",host="example.com",mode="1"'
-          if echo "$metrics" | grep -q 'method="CONNECT"'; then
+          echo "$metrics" | grep 'method="GET",route="/",status="200",host="example.com",mode="1"' > /dev/null
+          if echo "$metrics" | grep 'method="CONNECT"' > /dev/null; then
             echo "::error::intercepted call was also recorded as a CONNECT"
             exit 1
           fi
@@ -302,7 +302,7 @@ jobs:
             -v "$ca/ca.crt:/etc/nginx/intercept/ca.crt:ro" \
             -v "$ca/ca.key:/etc/nginx/intercept/ca.key:ro" \
             openresty-prometheus:smoke
-          docker exec smoke-grpc nginx -T 2>/dev/null | grep -q '127.0.0.1:3130'
+          docker exec smoke-grpc nginx -T 2>/dev/null | grep '127.0.0.1:3130' > /dev/null
           # grpc-go dials through HTTPS_PROXY for every target, plaintext included
           grpc() { docker run --rm --network container:smoke-grpc -e HTTPS_PROXY=http://127.0.0.1:3128 fullstorydev/grpcurl -plaintext -max-time 10 "$@"; }
           probe() { docker run --rm --network container:smoke-grpc curlimages/curl -sS --retry 10 --retry-connrefused --retry-delay 1 -m 15 "$@"; }
@@ -323,12 +323,12 @@ jobs:
 
           metrics=$(probe http://127.0.0.1:9145/metrics)
           echo "$metrics" | grep 'host="grpcbin"'
-          echo "$metrics" | grep -q 'method="POST",route="/hello.HelloService/SayHello",status="grpc_0",host="grpcbin",mode="1"'
-          echo "$metrics" | grep -q 'route="/grpcbin.GRPCBin/SpecificError",status="grpc_5"'
-          echo "$metrics" | grep -q 'route="/hello.HelloService/SayHello".*protocol="grpc"'
-          echo "$metrics" | grep -q 'method="GET",route="/",status="200",host="example.com",mode="1"'
-          echo "$metrics" | grep -q 'host="example.com".*protocol="https"'
-          if echo "$metrics" | grep -q 'method="CONNECT"'; then
+          echo "$metrics" | grep 'method="POST",route="/hello.HelloService/SayHello",status="grpc_0",host="grpcbin",mode="1"' > /dev/null
+          echo "$metrics" | grep 'route="/grpcbin.GRPCBin/SpecificError",status="grpc_5"' > /dev/null
+          echo "$metrics" | grep 'route="/hello.HelloService/SayHello".*protocol="grpc"' > /dev/null
+          echo "$metrics" | grep 'method="GET",route="/",status="200",host="example.com",mode="1"' > /dev/null
+          echo "$metrics" | grep 'host="example.com".*protocol="https"' > /dev/null
+          if echo "$metrics" | grep 'method="CONNECT"' > /dev/null; then
             echo "::error::a decoded call was also recorded as a CONNECT"
             exit 1
           fi
@@ -346,12 +346,12 @@ jobs:
 
           [ "$(probe http://127.0.0.1/)" = "app-ok" ]
           metrics=$(probe http://127.0.0.1:9145/metrics)
-          echo "$metrics" | grep -q '^nginx_http_request_duration_seconds{'
-          echo "$metrics" | grep -Eq '^nginx_connection_slots_limit\{.*\} 1000$'
-          echo "$metrics" | grep -q '^nginx_http_request_duration_seconds_histogram_bucket{' \
+          echo "$metrics" | grep '^nginx_http_request_duration_seconds{' > /dev/null
+          echo "$metrics" | grep -E '^nginx_connection_slots_limit\{.*\} 1000$' > /dev/null
+          echo "$metrics" | grep '^nginx_http_request_duration_seconds_histogram_bucket{' > /dev/null \
             || { echo "::error::METRICS_CONFIG did not turn the latency histogram on"; exit 1; }
-          echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
-          docker logs smoke-envcfg 2>&1 | grep -q 'METRICS_CONFIG: skipped "http.metric_latency_histogram": unknown setting'
+          echo "$metrics" | grep -x 'nginx_metric_errors_total 0' > /dev/null
+          docker logs smoke-envcfg 2>&1 | grep 'METRICS_CONFIG: skipped "http.metric_latency_histogram": unknown setting' > /dev/null
 
       - name: Smoke test logs
         if: always() && steps.smoke-build.outputs.run == 'true'

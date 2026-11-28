@@ -13,6 +13,12 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+- **CI: the image smoke tests no longer fail at random with exit 141.**
+  Their checks piped output into `grep -q` under `set -o pipefail`; `grep -q`
+  exits at the first match, so whatever was still writing (`docker logs`,
+  `echo` of a large exposition) could die of SIGPIPE and fail the step even
+  though the check had passed. The checks now read their input to the end.
+
 ## v2.8.3 — 2026-11-28
 
 ### 2026-11-28

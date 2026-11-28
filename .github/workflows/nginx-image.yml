@@ -91,7 +91,7 @@ jobs:
           [ -n "$newest" ] || { echo "::error::no image on Docker Hub for any of the newest nginx releases"; exit 1; }
 
           version="${REQUESTED:-$newest}"
-          printf '%s\n' "$all" | grep -qx "$version" \
+          printf '%s\n' "$all" | grep -x "$version" > /dev/null \
             || { echo "::error::nginx $version is not a release"; exit 1; }
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
@@ -241,15 +241,15 @@ jobs:
 
           metrics=$(probe http://127.0.0.1:9145/metrics)
           echo "$metrics" | grep -E '^nginx_http_requests_total'
-          echo "$metrics" | grep -q 'route="/",status="200"'
-          echo "$metrics" | grep -q 'route="/orders/$param",status="404"'
-          echo "$metrics" | grep -q '^nginx_http_connections{state="active"}'
-          echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
+          echo "$metrics" | grep 'route="/",status="200"' > /dev/null
+          echo "$metrics" | grep 'route="/orders/$param",status="404"' > /dev/null
+          echo "$metrics" | grep '^nginx_http_connections{state="active"}' > /dev/null
+          echo "$metrics" | grep -x 'nginx_metric_errors_total 0' > /dev/null
           # defaults: histograms off, the metrics server itself not recorded
-          if echo "$metrics" | grep -q '_histogram_bucket'; then
+          if echo "$metrics" | grep '_histogram_bucket' > /dev/null; then
             echo "::error::a histogram is on by default"; exit 1
           fi
-          if echo "$metrics" | grep -q 'route="/metrics"'; then
+          if echo "$metrics" | grep 'route="/metrics"' > /dev/null; then
             echo "::error::the metrics server is recorded"; exit 1
           fi
           # 1 = doesn't parse; 3 = lint findings only (the names are the sidecar's)
@@ -269,24 +269,24 @@ jobs:
 
           [ "$(probe http://127.0.0.1/orders/42)" = "app-ok" ]
           [ "$(probe http://127.0.0.1:18080/orders/42)" = "app-ok" ]   # through stream
-          docker logs smoke-sidecar 2>&1 | grep -q 'sidecar for 127.0.0.1:8080'
+          docker logs smoke-sidecar 2>&1 | grep 'sidecar for 127.0.0.1:8080' > /dev/null
 
           # outbound: plain HTTP always, CONNECT where the tunnel module is
           [ "$(probe -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 http://example.com/)" = "200" ]
           tunnel=false
-          if docker logs smoke-sidecar 2>&1 | grep 'outbound on 127.0.0.1:3128' | grep -qv 'HTTP only'; then
+          if docker logs smoke-sidecar 2>&1 | grep 'outbound on 127.0.0.1:3128' | grep -v 'HTTP only' > /dev/null; then
             tunnel=true
             [ "$(probe -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 https://example.com/)" = "200" ]
           fi
 
           metrics=$(probe http://127.0.0.1:9145/metrics)
-          echo "$metrics" | grep -q 'route="/orders/$param",status="200"'
-          echo "$metrics" | grep -q 'nginx_stream_connections_total{destination="web",upstream_addr="127.0.0.1:8080",status="200"}'
-          echo "$metrics" | grep -q 'method="GET",route="/",status="200",host="example.com",mode="1"'
+          echo "$metrics" | grep 'route="/orders/$param",status="200"' > /dev/null
+          echo "$metrics" | grep 'nginx_stream_connections_total{destination="web",upstream_addr="127.0.0.1:8080",status="200"}' > /dev/null
+          echo "$metrics" | grep 'method="GET",route="/",status="200",host="example.com",mode="1"' > /dev/null
           if $tunnel; then
-            echo "$metrics" | grep -q 'method="CONNECT",route="example.com:443",status="200",host="example.com",mode="1",protocol="tunnel"'
+            echo "$metrics" | grep 'method="CONNECT",route="example.com:443",status="200",host="example.com",mode="1",protocol="tunnel"' > /dev/null
           fi
-          echo "$metrics" | grep -qx 'nginx_metric_errors_total 0'
+          echo "$metrics" | grep -x 'nginx_metric_errors_total 0' > /dev/null
 
           # https interception, where the tunnel module is: a throwaway CA,
           # example.com decrypted and sent on over verified TLS
@@ -304,10 +304,10 @@ jobs:
             probe2() { docker run --rm --network container:smoke-app2 -v "$ca:/ca:ro" curlimages/curl -sS --retry 10 --retry-connrefused --retry-delay 1 -m 15 "$@"; }
 
             [ "$(probe2 -o /dev/null -w '%{http_code}' -x http://127.0.0.1:3128 --cacert /ca/ca.crt https://example.com/)" = "200" ]
-            docker logs smoke-intercept 2>&1 | grep -q 'with https interception'
+            docker logs smoke-intercept 2>&1 | grep 'with https interception' > /dev/null
             metrics=$(probe2 http://127.0.0.1:9145/metrics)
-            echo "$metrics" | grep -q 'method="GET",route="/",status="200",host="example.com",mode="1",protocol="https"'
-            ! echo "$metrics" | grep -q 'route="example.com:443"'
+            echo "$metrics" | grep 'method="GET",route="/",status="200",host="example.com",mode="1",protocol="https"' > /dev/null
+            ! echo "$metrics" | grep 'route="example.com:443"' > /dev/null
           fi
 
       - name: Smoke test logs
