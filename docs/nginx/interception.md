@@ -39,7 +39,9 @@ app ──CONNECT api:443──▶ :3128 ── first bytes? ──┬─ TLS �
    Certificates are made once per name and kept, per worker, for 6 days.
 4. Each decrypted request is recorded like any other, as `mode="1"`, and sent
    to its destination over TLS **verified against the system trust store**:
-   the app's guarantee that it talks to the real `api` still holds.
+   the app's guarantee that it talks to the real `api` still holds. The
+   store's CAs are read from the bundle as verifications need them, not all
+   at start: a destination's CA is read once, then kept.
 5. Connections to destinations are kept alive, **per name and port**, not per
    address: a connection verified for one name is never used for another name
    on the same IP. Once warm, an intercepted request costs no extra round trip.
@@ -115,6 +117,7 @@ The sidecar's config is plain nginx; see what the image generates in
 |---|---|---|
 | `prometheus_intercept_connect [tls=<addr>] [h2c=<addr>];` | location, if in location | Handles CONNECT here: TLS to the `tls=` terminator (default `127.0.0.1:3129`), the HTTP/2 preface to `h2c=` (`127.0.0.1:3130`), anything else relayed. An address is `host:port`, `[v6]:port` or `unix:/path`. Use it instead of `tunnel_pass` |
 | `prometheus_intercept_ca <crt> <key>;` | http | The CA, read when the configuration is loaded |
+| `prometheus_intercept_trusted <bundle>;` | http | Destinations are verified against this bundle's CAs, read on demand: only the CAs your destinations need are held in memory, not the whole bundle (~0.7 MB for a system bundle). Keep `proxy_ssl_verify` / `grpc_ssl_verify` on, and set their `*_trusted_certificate` to one certificate of the same bundle (they need a file; trust stays the bundle's). The file is opened by the master and read by the workers, whatever their user; a new bundle takes a reload |
 | `$prometheus_intercept_cert`, `$prometheus_intercept_key` | variables | The minted certificate and its key: `ssl_certificate data:$prometheus_intercept_cert;` |
 | `prometheus_intercept_resolve on;` | server, location | Resolve the request's destination (`Host`, port from the PROXY line) with `resolver` |
 | `prometheus_intercept_origin <n>;` | upstream | Connect to that destination, keeping up to `n` idle connections per worker, per name. Needs a placeholder `server 0.0.0.1;` |
@@ -145,6 +148,11 @@ The sidecar's config is plain nginx; see what the image generates in
 - **Mount the CA Secret as a directory**, as the example does
   (`mountPath: /etc/nginx/intercept`). Files mounted with `subPath` are never
   updated by Kubernetes: a rotated Secret wouldn't reach nginx at all.
+- **Memory:** about 3 MB for nginx with interception on a FastCGI server's
+  config, measured on nginx 1.31 with OpenSSL 3: about 1 MB of it is
+  interception, most of that OpenSSL setting up its first TLS context and
+  handshake. It doesn't grow with requests; each new destination adds a few
+  KB (its kept connection, its certificate, its CA if new).
 - **A new CA takes a reload:** the master reads it when the configuration
   loads. The image does that for you (`INTERCEPT_CA_RELOAD`); on your own
   nginx, `nginx -s reload` after replacing the files. Trust the new CA in the

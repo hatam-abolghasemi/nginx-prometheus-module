@@ -13,6 +13,18 @@ New entries go under **Unreleased** until the next tag.
 
 ## Unreleased
 
+- **https interception holds ~0.7 MB less memory.** Destinations were
+  verified against the whole system CA bundle, parsed at start and kept: all
+  ~120 CAs, ~0.7 MB, to verify the few destinations an app calls. A new
+  directive, `prometheus_intercept_trusted <bundle>;`, keeps only an index of
+  the bundle (24 bytes per CA) and reads a CA when a verification first needs
+  it. The image's `INTERCEPT_TLS=on` config uses it; `proxy_ssl_trusted_certificate`
+  and `grpc_ssl_trusted_certificate` now point at one CA of the same bundle
+  (they need a file), so what is trusted doesn't change. Measured with a
+  FastCGI app's config, after HTTPS traffic: 3.9 MB → 3.2 MB of nginx's own
+  memory. Verification itself is nginx's, unchanged: names, depth, a `502` for
+  a destination that doesn't verify.
+
 - **CI: the image smoke tests no longer fail at random with exit 141.**
   Their checks piped output into `grep -q` under `set -o pipefail`; `grep -q`
   exits at the first match, so whatever was still writing (`docker logs`,
