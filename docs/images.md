@@ -14,7 +14,7 @@ swap the image name, keep the tag. Any other flavor is
 The package pages list every tag and digest, newest Alpine first.
 
 **One version of each, always the newest.** nginx: the newest nginx release,
-Debian (the plain tag) and Alpine. OpenResty: the newest docker-openresty
+Debian (the plain tag), Alpine and Alpine slim. OpenResty: the newest docker-openresty
 release, Alpine and Debian (bookworm); it can be a little behind nginx, as
 each follows its own upstream. Only that version is kept: older versions are
 removed from ghcr.io (see [Deprecated](#deprecated) and [Pinning](#pinning)).
@@ -32,8 +32,9 @@ security rebuild upstream reaches these images within hours.
 `ghcr.io/hatam-abolghasemi/nginx-prometheus-module`: `ngx_http_prometheus_module.so`
 and `ngx_stream_prometheus_module.so` at `/`, built against that exact nginx,
 for your own nginx image or host. Same tags as [nginx](#nginx) below:
-`<version>` is for a Debian (glibc) nginx, `<version>-alpine` for Alpine
-(musl).
+`<version>` is for a Debian (glibc) nginx, `<version>-alpine` and
+`<version>-alpine-slim` for Alpine (musl; slim runs the same nginx, so the
+same files).
 
 ```dockerfile
 FROM nginx:1.31.10-alpine
@@ -45,21 +46,29 @@ More, and on a host: [install](nginx/README.md#install).
 
 ## nginx
 
-The newest nginx, in the default (Debian) and `alpine` flavors, on every
-platform upstream publishes them for:
+The newest nginx, in the default (Debian), `alpine` and `alpine-slim`
+flavors, on every platform upstream publishes them for:
 
 | Tag | Meaning |
 |---|---|
-| `<version>`, `<version>-alpine` | that nginx version |
-| `<series>[-alpine]`, e.g. `1.31-alpine` | newest version in that series |
-| `latest`, `alpine`, `mainline-alpine` | the newest, Alpine |
-| `mainline` | the newest, Debian |
+| `<version>`, `<version>-alpine`, `<version>-alpine-slim` | that nginx version |
+| `<series>[-alpine\|-alpine-slim]`, e.g. `1.31-alpine` | newest version in that series |
+| `latest`, `mainline` | the newest, Debian |
+| `alpine`, `mainline-alpine` | the newest, Alpine |
+| `alpine-slim`, `mainline-alpine-slim` | the newest, Alpine slim |
+| the same with the Debian or Alpine release, e.g. `1.31.10-trixie`, `trixie`, `1.31.10-alpine3.24`, `alpine3.24-slim` | as upstream: the same image under its OS release's name (the plain tag is Debian trixie) |
 
-One difference from upstream: `latest` is Alpine here (upstream's is Debian),
-the same as in the OpenResty image. For Debian, use `mainline` or a version.
+`alpine-slim` is upstream's smallest image: nginx without the extra dynamic
+modules (njs, geoip, image-filter, xslt) and without `curl`. The module, the
+[sidecar](nginx/sidecar.md) and [https interception](nginx/interception.md)
+need none of those, and each slim build goes through the same smoke tests.
+
+`latest` is Debian, as upstream's is. (The OpenResty image's `latest` is
+Alpine, [below](#openresty).)
 
 ```bash
 docker pull ghcr.io/hatam-abolghasemi/nginx:alpine
+docker pull ghcr.io/hatam-abolghasemi/nginx:1.31.10-alpine-slim
 docker pull ghcr.io/hatam-abolghasemi/nginx:1.31.10       # Debian
 ```
 
@@ -82,7 +91,7 @@ docker pull ghcr.io/hatam-abolghasemi/openresty:latest
 
 ## Any other flavor
 
-Both Dockerfiles take any upstream tag, flavor included (`alpine-slim`,
+Both Dockerfiles take any upstream tag, flavor included (`alpine-perl`,
 `perl`, `otel`, `trixie` for nginx; `noble`, `rocky`, ... for OpenResty), and
 work for any version. From a clone of this repo:
 
@@ -112,15 +121,15 @@ after it: that one is [the module](#the-module), current.
 | `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/nginx` | v2.3.0 | `ghcr.io/hatam-abolghasemi/nginx`, same tags |
 | `ghcr.io/hatam-abolghasemi/nginx-prometheus-module/openresty` | v2.3.0 | `ghcr.io/hatam-abolghasemi/openresty`, same tags |
 | `ghcr.io/hatam-abolghasemi/openresty-prometheus-exporter` | v1.x | `ghcr.io/hatam-abolghasemi/openresty` |
-| nginx flavor tags other than default and `alpine` (`perl`, `otel`, `alpine-slim`, `trixie`, ...) | v2.3.0 | the default or `alpine` tag, or one `docker build` |
+| nginx flavor tags other than default, `alpine` and `alpine-slim` (`perl`, `otel`, `trixie`, ...) | v2.3.0 | the default, `alpine` or `alpine-slim` tag, or one `docker build` |
 | openresty flavor tags other than `alpine` and `bookworm` (`noble`, `rocky`, ...) | v2.3.0 | `alpine` / `bookworm`, or one `docker build` |
-| nginx `stable`, `stable-alpine` (and the module package's) | v2.7.0 | `alpine` / `latest` (the newest nginx) |
+| nginx `stable`, `stable-alpine` (and the module package's) | v2.7.0 | `latest` / `alpine` (the newest nginx) |
 | every older version: `1.31.9`, `1.31.9-alpine`, older OpenResty releases, ... | when a newer one came out | the current version |
 
 What will go, and deleting it (the maintainer, with `delete:packages`):
 `sh .github/scripts/prune-images.sh` lists it, `--delete` deletes it. It keeps
 the current version of each image (what `latest`, `alpine`, `mainline` /
-`bookworm` point to, in both flavors) and removes every other tagged version.
+`bookworm` point to, in every main flavor) and removes every other tagged version.
 
 ## Pinning
 

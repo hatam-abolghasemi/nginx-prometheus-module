@@ -10,8 +10,9 @@
 #
 # The current version is what the moving tags point to (nginx and the module:
 # latest, alpine, mainline, mainline-alpine; openresty: latest, alpine,
-# bookworm), in either main flavor: tags are compared without their -alpine /
-# -bookworm, so 1.29.2.1-1-alpine is current when 1.29.2.1-1-bookworm is
+# bookworm), in any main flavor: tags are compared without their -alpine,
+# -alpine-slim, -alpine3.24(-slim), -trixie / -bookworm, so 1.29.2.1-1-alpine is
+# current when 1.29.2.1-1-bookworm is
 # (promote moves latest and alpine onto a version of their own). Untagged versions
 # are never touched: they are the per-platform manifests of the tags that
 # stay. A package with none of the moving tags is left alone.
@@ -37,10 +38,15 @@ MOVING_openresty="latest alpine bookworm"
 
 enc() { printf '%s' "$1" | sed 's#/#%2F#g'; }
 
-# a tag without its main-flavor suffix: 1.31.10-alpine -> 1.31.10
+# a tag without its main-flavor suffix: 1.31.10-alpine -> 1.31.10,
+# 1.31.10-alpine3.24-slim -> 1.31.10
 stem() {
     case $1 in
+        *-alpine-slim)          echo "${1%-alpine-slim}" ;;
+        *-alpine[0-9]*-slim)    echo "${1%-alpine[0-9]*-slim}" ;;
+        *-alpine[0-9]*.[0-9]*)  echo "${1%-alpine[0-9]*.[0-9]*}" ;;
         *-alpine)   echo "${1%-alpine}" ;;
+        *-trixie)   echo "${1%-trixie}" ;;
         *-bookworm) echo "${1%-bookworm}" ;;
         *)          echo "$1" ;;
     esac

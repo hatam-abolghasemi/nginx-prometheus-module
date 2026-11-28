@@ -48,7 +48,7 @@ COPY --from=ghcr.io/hatam-abolghasemi/nginx-prometheus-module:1.31.10-alpine / /
 RUN sed -i '1i load_module modules/ngx_http_prometheus_module.so;' /etc/nginx/nginx.conf
 ```
 
-The tag is your nginx version, with `-alpine` for an Alpine (musl) base. On a
+The tag is your nginx version, with `-alpine` (or `-alpine-slim`) for an Alpine (musl) base. On a
 host instead of an image: a prebuilt `.so` from the
 [releases](https://github.com/hatam-abolghasemi/nginx-prometheus-module/releases),
 or built from source for any version in about a second
@@ -60,7 +60,8 @@ configuration is.
 
 The official `nginx` image with the module loaded: the newest nginx, Alpine
 and Debian, rebuilt whenever upstream releases. Swap the image name, keep the
-tag (`latest` and `alpine` are the newest mainline on Alpine):
+tag (`latest` is the newest on Debian, as upstream; `alpine` and `alpine-slim`
+on Alpine):
 
 ```bash
 docker run -p 80:80 -p 9145:9145 ghcr.io/hatam-abolghasemi/nginx:alpine
@@ -221,8 +222,8 @@ ghcr.io/hatam-abolghasemi/openresty:<openresty-tag>-<flavor>    OpenResty with t
 
 Each follows its upstream: a new nginx or docker-openresty release, or
 upstream rebuilding a tag on a newer base, is built, smoke-tested and
-published under upstream's own tags within hours. `latest` and `alpine` are
-the newest on Alpine. Tags and pinning: [docs/images.md](docs/images.md).
+published under upstream's own tags within hours, Alpine slim included.
+nginx's `latest` is Debian, as upstream's; OpenResty's is Alpine. Tags and pinning: [docs/images.md](docs/images.md).
 
 GitHub **Releases** (`vX.Y.Z`) are this project's own versions: they carry
 the prebuilt `.so` files, and their notes are the [changelog](CHANGELOG.md)
